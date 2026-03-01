@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oleksiiluchnikov/teolog/schema/wide-event",
+  "title": "teolog wide event",
+  "description": "NDJSON wide event format shared across Rust, TypeScript, and Lua implementations",
+  "type": "object",
+  "required": ["ts", "lvl", "msg"],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp"
+    },
+    "lvl": {
+      "type": "string",
+      "enum": ["trace", "debug", "info", "warn", "error"],
+      "description": "Log level"
+    },
+    "msg": {
+      "type": "string",
+      "description": "Human-readable message"
+    },
+    "span": {
+      "type": "string",
+      "description": "Span or operation name"
+    },
+    "dur_ms": {
+      "type": "number",
+      "description": "Duration in milliseconds (set on span close)"
+    },
+    "project": {
+      "type": "string",
+      "description": "Project name (e.g. kolo, sayit, vault.nvim)"
+    },
+    "module": {
+      "type": "string",
+      "description": "Module or component name"
+    },
+    "ctx": {
+      "type": "object",
+      "description": "Contextual key-value pairs accumulated during the span",
+      "additionalProperties": true
+    },
+    "data": {
+      "type": "object",
+      "description": "Event-specific payload data",
+      "additionalProperties": true
+    },
+    "err": {
+      "type": "object",
+      "description": "Error details (present only on error events)",
+      "properties": {
+        "message": { "type": "string" },
+        "kind": { "type": "string" },
+        "stack": { "type": "string" }
+      }
+    },
+    "parent": {
+      "type": "string",
+      "description": "Parent span name for trace correlation"
+    }
+  },
+  "additionalProperties": true
+}
