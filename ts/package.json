@@ -1,0 +1,22 @@
+{
+  "name": "teolog",
+  "version": "0.1.0",
+  "description": "Cross-stack wide-event structured logging — TypeScript/Svelte implementation",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./svelte": "./dist/svelte.js"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts src/svelte.ts --outdir dist --target browser",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/bun": "latest"
+  },
+  "license": "MIT"
+}
