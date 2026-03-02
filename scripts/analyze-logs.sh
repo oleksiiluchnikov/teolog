@@ -65,6 +65,7 @@ show_help() {
   echo "  ${BLUE}project${NC} NAME   Filter by project name"
   echo "  ${BLUE}stats${NC}          Show log statistics"
   echo "  ${BLUE}recent${NC} [N]     Show last N logs (default: 20)"
+  echo "  ${BLUE}trace${NC} [ID]     Show all events for a trace_id (or list recent traces)"
   echo "  ${BLUE}search${NC} TEXT    Full-text search across all fields"
   echo "  ${BLUE}clear${NC}          Clear log file (with confirmation)"
   echo "  ${BLUE}help${NC}           Show this help"
@@ -124,12 +125,63 @@ case "$CMD" in
     echo ""
     echo -e "${BLUE}Avg span duration (ms):${NC}"
     jq -s '[.[] | select(.dur_ms != null) | .dur_ms] | if length > 0 then (add / length | floor) else 0 end' "$LOG_FILE"
+    echo ""
+    echo -e "${BLUE}Unique traces:${NC}"
+    jq -r 'select(.trace_id != null) | .trace_id' "$LOG_FILE" 2>/dev/null | sort -u | wc -l | tr -d ' '
+    echo ""
+    echo -e "${BLUE}By service:${NC}"
+    jq -r '.service // "(none)"' "$LOG_FILE" 2>/dev/null | sort | uniq -c | sort -rn
     ;;
 
   recent)
     COUNT="${2:-20}"
     echo -e "${GREEN}=== Last $COUNT Events ===${NC}"
     tail -"$COUNT" "$LOG_FILE" | jq -C '.'
+    ;;
+
+  trace)
+    TRACE_ID="${2:-}"
+    if [[ -z "$TRACE_ID" ]]; then
+      # List recent traces with summary
+      echo -e "${BLUE}=== Recent Traces ===${NC}"
+      echo ""
+      jq -r 'select(.trace_id != null) | .trace_id' "$LOG_FILE" \
+        | sort | uniq -c | sort -rn | head -20 \
+        | while read -r count tid; do
+          # Get first and last event in this trace
+          first_ts=$(jq -r "select(.trace_id == \"$tid\") | .ts" "$LOG_FILE" | head -1)
+          last_ts=$(jq -r "select(.trace_id == \"$tid\") | .ts" "$LOG_FILE" | tail -1)
+          has_error=$(jq -r "select(.trace_id == \"$tid\" and .lvl == \"error\") | .trace_id" "$LOG_FILE" | head -1)
+          if [[ -n "$has_error" ]]; then
+            marker="${RED}ERR${NC}"
+          else
+            marker="${GREEN} OK${NC}"
+          fi
+          echo -e "  $marker ${DIM}${tid:0:8}…${NC}  ${count} events  ${DIM}${first_ts:-?} → ${last_ts:-?}${NC}"
+        done
+      echo ""
+      echo -e "${DIM}Usage: $0 trace <trace_id> [log-file]${NC}"
+    else
+      echo -e "${BLUE}=== Trace: ${TRACE_ID:0:8}… ===${NC}"
+      echo ""
+      # Show all events for this trace, ordered by timestamp
+      jq -C "select(.trace_id != null and (.trace_id | startswith(\"$TRACE_ID\")))" "$LOG_FILE" \
+        | jq -sC 'sort_by(.ts) | .[]'
+      echo ""
+      # Summary
+      echo -e "${DIM}--- Trace Summary ---${NC}"
+      jq -s "
+        [.[] | select(.trace_id != null and (.trace_id | startswith(\"$TRACE_ID\")))]
+        | {
+            events: length,
+            spans: ([.[] | select(.span != null)] | length),
+            errors: ([.[] | select(.lvl == \"error\")] | length),
+            total_dur_ms: ([.[] | select(.dur_ms != null) | .dur_ms] | add // 0),
+            services: ([.[] | select(.service != null) | .service] | unique),
+            projects: ([.[] | select(.project != null) | .project] | unique)
+          }
+      " "$LOG_FILE" | jq -C '.'
+    fi
     ;;
 
   search)
