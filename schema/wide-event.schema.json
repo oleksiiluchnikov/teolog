@@ -20,6 +20,21 @@
       "type": "string",
       "description": "Human-readable message"
     },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "Trace ID — groups all events for one top-level operation (32 hex chars / 16 bytes, OTEL-compatible)"
+    },
+    "span_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Unique span identifier (16 hex chars / 8 bytes, OTEL-compatible)"
+    },
+    "parent_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Parent span ID for trace correlation (16 hex chars / 8 bytes)"
+    },
     "span": {
       "type": "string",
       "description": "Span or operation name"
@@ -32,9 +47,21 @@
       "type": "string",
       "description": "Project name (e.g. kolo, sayit, vault.nvim)"
     },
+    "service": {
+      "type": "string",
+      "description": "Service/runtime name (e.g. tauri-backend, svelte-frontend, neovim)"
+    },
     "module": {
       "type": "string",
       "description": "Module or component name"
+    },
+    "source": {
+      "type": "string",
+      "description": "Source file path where the log was emitted"
+    },
+    "lnum": {
+      "type": "integer",
+      "description": "Source line number"
     },
     "ctx": {
       "type": "object",
@@ -57,7 +84,8 @@
     },
     "parent": {
       "type": "string",
-      "description": "Parent span name for trace correlation"
+      "description": "DEPRECATED: Use parent_id instead. Parent span name (not an ID, unreliable for correlation)",
+      "deprecated": true
     }
   },
   "additionalProperties": true
