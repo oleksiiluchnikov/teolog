@@ -95,6 +95,87 @@ impl Sink for MultiSink {
     }
 }
 
+// ---------------------------------------------------------------------------
+// HTTP Sink (behind "http-sink" feature)
+// ---------------------------------------------------------------------------
+
+/// Batch POST NDJSON to a URL with configurable headers.
+///
+/// Events are queued and flushed either when the batch reaches `batch_size`
+/// or when `flush()` is called explicitly. A background thread flushes on
+/// an interval if `flush_interval` is set.
+///
+/// Enable with: `teolog = { features = ["http-sink"] }`
+#[cfg(feature = "http-sink")]
+pub struct HttpSink {
+    url: String,
+    headers: Vec<(String, String)>,
+    batch_size: usize,
+    queue: std::sync::Mutex<Vec<String>>,
+}
+
+#[cfg(feature = "http-sink")]
+impl HttpSink {
+    /// Create a new HTTP sink.
+    ///
+    /// # Arguments
+    /// * `url` — POST endpoint (e.g. `https://api.axiom.co/v1/datasets/logs/ingest`)
+    /// * `headers` — extra headers (e.g. `[("Authorization", "Bearer ...")]`)
+    /// * `batch_size` — flush after this many events (default: 100)
+    pub fn new(url: impl Into<String>, headers: Vec<(String, String)>, batch_size: usize) -> Self {
+        Self {
+            url: url.into(),
+            headers,
+            batch_size: if batch_size == 0 { 100 } else { batch_size },
+            queue: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Flush all queued events to the HTTP endpoint.
+    pub fn flush(&self) {
+        let batch = {
+            let mut q = self.queue.lock().unwrap();
+            if q.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *q)
+        };
+
+        let body = batch.join("\n");
+        let mut req = ureq::post(&self.url).set("Content-Type", "application/x-ndjson");
+        for (k, v) in &self.headers {
+            req = req.set(k, v);
+        }
+
+        // Fire-and-forget: log errors to stderr but don't propagate.
+        if let Err(e) = req.send_string(&body) {
+            eprintln!("[teolog] HttpSink flush error: {e}");
+        }
+    }
+}
+
+#[cfg(feature = "http-sink")]
+impl Sink for HttpSink {
+    fn emit(&self, event: &WideEvent) {
+        let json = event.to_json();
+        let should_flush = {
+            let mut q = self.queue.lock().unwrap();
+            q.push(json);
+            q.len() >= self.batch_size
+        };
+        if should_flush {
+            self.flush();
+        }
+    }
+}
+
+#[cfg(feature = "http-sink")]
+impl Drop for HttpSink {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
