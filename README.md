@@ -9,7 +9,7 @@ teolog emits **wide events** — single JSON objects per operation that capture 
 Shared format across:
 - **Rust** (`crate/`) — CLIs, Tauri backends
 - **TypeScript** (`ts/`) — Svelte frontends, Node services
-- **Lua** (`lua/teolog/`) — Neovim plugins
+- **Lua/Neovim** → see [teolog.nvim](https://github.com/oleksiiluchnikov/teolog.nvim)
 
 ## Schema
 
@@ -62,21 +62,7 @@ span.finish(); // emits with duration
 
 ### Lua (Neovim)
 
-```lua
-local teolog = require("teolog")
-
-local log = teolog.new("vault.nvim", teolog.sinks.MultiSink.new({
-  teolog.sinks.FileSink.new(),          -- async NDJSON to ~/.local/state/nvim/teolog.log
-  teolog.sinks.NotifySink.new("vault"), -- vim.notify for warnings+
-}))
-
-log:info("plugin loaded")
-
-local span = log:span("scan_vault")
-span:set("root", "/path/to/vault")
-span:data("file_count", 500)
-span:finish() -- emits with duration
-```
+See [teolog.nvim](https://github.com/oleksiiluchnikov/teolog.nvim) — the dedicated Neovim plugin with async file writes, log rotation, and user commands.
 
 ## Sinks
 

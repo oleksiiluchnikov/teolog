@@ -6,7 +6,7 @@ default:
 # === Quality ===
 
 # Run all checks (lint + typecheck + test)
-qa: lint check test
+qa: lint check test-rust
 
 # Typecheck all stacks
 check: check-rust check-ts
@@ -18,16 +18,13 @@ check-ts:
     cd ts && bun run typecheck
 
 # Lint all stacks
-lint: lint-rust lint-lua
+lint: lint-rust
 
 lint-rust:
     cargo clippy --manifest-path crate/Cargo.toml -- -D warnings
 
-lint-lua:
-    @echo "luacheck not configured (optional)"
-
 # Format all stacks
-fmt: fmt-rust fmt-ts fmt-lua
+fmt: fmt-rust fmt-ts
 
 fmt-rust:
     cargo fmt --manifest-path crate/Cargo.toml
@@ -35,22 +32,13 @@ fmt-rust:
 fmt-ts:
     cd ts && bunx prettier --write src/
 
-fmt-lua:
-    stylua lua/
-
 # === Tests ===
 
 # Run all tests
-test: test-rust test-lua
+test: test-rust
 
 test-rust:
     cargo test --manifest-path crate/Cargo.toml
-
-test-lua:
-    nvim --headless -u NONE --listen /tmp/teolog-test-$$.sock \
-        -c "set rtp+=." \
-        -c "luafile lua/teolog/test_spec.lua" \
-        -c "qa!"
 
 # === Build ===
 
