@@ -2,14 +2,15 @@
 //
 // Re-exports core types and adds a reactive LogContext using $state.
 // Usage:
-//   import { logContext, logger } from 'teolog/svelte';
+//   import { logContext, createLogger } from 'teolog/svelte';
 //   logContext.update({ view: 'Editor' });
-//   logger.info('Mounted', { duration: 42 });
+//   const log = createLogger('kolo', consoleSink, { service: 'svelte-frontend' });
+//   log.info('Mounted', { duration: 42 });
 
-export { Logger, ConsoleSink, CallbackSink, MultiSink, SpanBuilder } from './index.js';
+export { Logger, ConsoleSink, CallbackSink, MultiSink, HttpSink, SpanBuilder, genTraceId, genSpanId } from './index.js';
 export type { Level, WideEvent, Sink } from './index.js';
 
-import { Logger, ConsoleSink } from './index.js';
+import { Logger, ConsoleSink, genTraceId, genSpanId } from './index.js';
 import type { Level, WideEvent, Sink } from './index.js';
 
 /** Reactive LogContext using Svelte 5 $state rune. */
@@ -38,21 +39,39 @@ class ReactiveLogContext {
 /** Singleton reactive context — import and use across components. */
 export const logContext = new ReactiveLogContext();
 
+interface ReactiveLoggerOptions {
+  service?: string;
+  traceId?: string;
+}
+
 /**
  * Create a logger that automatically merges the reactive logContext
- * into every event's ctx field.
+ * into every event's ctx field. Supports trace_id and service.
  */
-export function createLogger(project: string, sink?: Sink): ReactiveLogger {
-  return new ReactiveLogger(project, sink ?? new ConsoleSink());
+export function createLogger(project: string, sink?: Sink, options?: ReactiveLoggerOptions): ReactiveLogger {
+  return new ReactiveLogger(project, sink ?? new ConsoleSink(), options);
 }
 
 class ReactiveLogger {
   private project: string;
   private sink: Sink;
+  private service?: string;
+  private traceId?: string;
 
-  constructor(project: string, sink: Sink) {
+  constructor(project: string, sink: Sink, options?: ReactiveLoggerOptions) {
     this.project = project;
     this.sink = sink;
+    this.service = options?.service;
+    this.traceId = options?.traceId;
+  }
+
+  /** Set a shared trace_id for all events from this logger. */
+  setTraceId(id: string): void {
+    this.traceId = id;
+  }
+
+  private resolveTraceId(): string {
+    return this.traceId ?? genTraceId();
   }
 
   private build(level: Level, msg: string, data?: Record<string, unknown>): WideEvent {
@@ -61,7 +80,10 @@ class ReactiveLogger {
       lvl: level,
       msg,
       project: this.project,
+      trace_id: this.resolveTraceId(),
+      span_id: genSpanId(),
     };
+    if (this.service) event.service = this.service;
     const ctx = logContext.snapshot();
     if (Object.keys(ctx).length > 0) event.ctx = ctx;
     if (data && Object.keys(data).length > 0) event.data = data;
