@@ -2,7 +2,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 export type Level = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
@@ -54,6 +54,13 @@ function hexEncode(bytes: Uint8Array): string {
 // --- Source Location ---
 
 /** Parse caller file:line from Error.stack (best-effort). */
+const LOG_PATHS = process.env.TEOLOG_LOG_PATHS === '1';
+const LOG_STACKS = process.env.TEOLOG_LOG_STACKS === '1';
+
+function sanitizeSource(source: string): string {
+  return LOG_PATHS ? source : basename(source);
+}
+
 function captureSource(): { source: string; lnum: number } | undefined {
   const err = new Error();
   if (!err.stack) return undefined;
@@ -73,7 +80,7 @@ function captureSource(): { source: string; lnum: number } | undefined {
       continue;
     }
 
-    return { source, lnum: parseInt(match[2], 10) };
+    return { source: sanitizeSource(source), lnum: parseInt(match[2], 10) };
   }
   return undefined;
 }
@@ -423,7 +430,7 @@ export class Logger {
   /** Emit with an error object. */
   errorWith(msg: string, err: unknown, data?: Record<string, unknown>): void {
     const errDetails = err instanceof Error
-      ? { message: err.message, kind: err.name, stack: err.stack }
+      ? { message: err.message, kind: err.name, ...(LOG_STACKS && err.stack ? { stack: err.stack } : {}) }
       : { message: String(err) };
     this.sink.emit(this.buildEvent('error', msg, data, errDetails));
   }
@@ -492,7 +499,7 @@ export class SpanBuilder {
   /** Record an error. */
   err(err: unknown): this {
     this._err = err instanceof Error
-      ? { message: err.message, kind: err.name, stack: err.stack }
+      ? { message: err.message, kind: err.name, ...(LOG_STACKS && err.stack ? { stack: err.stack } : {}) }
       : { message: String(err) };
     return this;
   }
