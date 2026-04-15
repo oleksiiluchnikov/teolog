@@ -7,7 +7,7 @@
 //   const log = createLogger('kolo', consoleSink, { service: 'svelte-frontend' });
 //   log.info('Mounted', { duration: 42 });
 
-export { Logger, ConsoleSink, CallbackSink, MultiSink, HttpSink, SpanBuilder, genTraceId, genSpanId } from './index.js';
+export { Logger, ConsoleSink, CallbackSink, MultiSink, HttpSink, FileSink, SpanBuilder, genTraceId, genSpanId, resolveXdgStatePath } from './index.js';
 export type { Level, WideEvent, Sink } from './index.js';
 
 import { Logger, ConsoleSink, genTraceId, genSpanId } from './index.js';
@@ -74,7 +74,7 @@ class ReactiveLogger {
     return this.traceId ?? genTraceId();
   }
 
-  private build(level: Level, msg: string, data?: Record<string, unknown>): WideEvent {
+  private build(level: Level, msg: string, data?: Record<string, unknown>, err?: WideEvent['err']): WideEvent {
     const event: WideEvent = {
       ts: new Date().toISOString(),
       lvl: level,
@@ -87,6 +87,7 @@ class ReactiveLogger {
     const ctx = logContext.snapshot();
     if (Object.keys(ctx).length > 0) event.ctx = ctx;
     if (data && Object.keys(data).length > 0) event.data = data;
+    if (err) event.err = err;
     return event;
   }
 
@@ -98,8 +99,8 @@ class ReactiveLogger {
 
   errorWith(msg: string, err: unknown, data?: Record<string, unknown>): void {
     const errDetails = err instanceof Error
-      ? { message: err.message, kind: err.name, stack: err.stack }
+      ? { message: err.message, kind: err.name, ...(process.env.TEOLOG_LOG_STACKS === '1' && err.stack ? { stack: err.stack } : {}) }
       : { message: String(err) };
-    this.sink.emit(this.build('error', msg, { ...data, error: errDetails }));
+    this.sink.emit(this.build('error', msg, data, errDetails));
   }
 }

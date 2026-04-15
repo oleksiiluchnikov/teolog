@@ -153,6 +153,20 @@ Override retention with env vars:
 - `TEOLOG_MAX_LOG_BYTES`
 - `TEOLOG_MAX_LOG_FILES`
 
+### Privacy-safe defaults
+
+By default, teolog avoids logging machine-specific private details in TypeScript and agent/bootstrap consumers:
+- absolute workspace paths are redacted to `repo` name only
+- Pi `session_file` path is not logged
+- raw CLI args are reduced to `cli_arg_count`
+- JavaScript stack traces are omitted
+- TypeScript `source` paths are reduced to basename only
+
+Opt in to full diagnostics when needed:
+- `TEOLOG_LOG_PATHS=1`
+- `TEOLOG_LOG_STACKS=1`
+- `TEOLOG_LOG_CLI_ARGS=1`
+
 ## Agentic CLI
 
 `teolog` now ships with compact, agent-facing log queries and a Pi bootstrap.
