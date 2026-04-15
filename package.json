@@ -1,0 +1,13 @@
+{
+  "name": "teolog-repo",
+  "private": true,
+  "workspaces": [
+    "ts"
+  ],
+  "scripts": {
+    "build": "cd ts && bun run build",
+    "test": "cd ts && bun test",
+    "typecheck": "cd ts && bun run typecheck"
+  },
+  "packageManager": "bun@1.3.12"
+}
