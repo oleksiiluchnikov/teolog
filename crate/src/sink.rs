@@ -1,5 +1,6 @@
 use crate::event::WideEvent;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Trait for emitting wide events to a destination.
 pub trait Sink: Send + Sync {
@@ -57,6 +58,9 @@ pub struct FileSink {
 impl FileSink {
     /// Open (or create) a file for append-mode NDJSON writing.
     pub fn open(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        if let Some(parent) = path.as_ref().parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -72,6 +76,139 @@ impl Sink for FileSink {
         if let Ok(mut w) = self.inner.lock() {
             let _ = writeln!(w, "{}", event.to_json());
             let _ = w.flush();
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RotationPolicy {
+    pub max_bytes: u64,
+    pub max_files: usize,
+}
+
+impl RotationPolicy {
+    pub const fn new(max_bytes: u64, max_files: usize) -> Self {
+        Self {
+            max_bytes,
+            max_files,
+        }
+    }
+}
+
+impl Default for RotationPolicy {
+    fn default() -> Self {
+        Self {
+            max_bytes: 10 * 1024 * 1024,
+            max_files: 5,
+        }
+    }
+}
+
+struct RotatingFileState {
+    path: PathBuf,
+    policy: RotationPolicy,
+    writer: std::io::BufWriter<std::fs::File>,
+    size_bytes: u64,
+}
+
+impl RotatingFileState {
+    fn open(path: impl AsRef<Path>, policy: RotationPolicy) -> std::io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        Ok(Self {
+            path,
+            policy,
+            writer: std::io::BufWriter::new(file),
+            size_bytes,
+        })
+    }
+
+    fn emit_line(&mut self, line: &str) -> std::io::Result<()> {
+        let line_bytes = line.as_bytes().len() as u64 + 1;
+        if self.policy.max_bytes > 0
+            && self.size_bytes > 0
+            && self.size_bytes + line_bytes > self.policy.max_bytes
+        {
+            self.rotate()?;
+        }
+        writeln!(self.writer, "{line}")?;
+        self.writer.flush()?;
+        self.size_bytes += line_bytes;
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> std::io::Result<()> {
+        self.writer.flush()?;
+        if self.policy.max_files == 0 {
+            self.writer = std::io::BufWriter::new(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&self.path)?,
+            );
+            self.size_bytes = 0;
+            return Ok(());
+        }
+
+        let oldest = archive_path(&self.path, self.policy.max_files);
+        if oldest.exists() {
+            let _ = std::fs::remove_file(&oldest);
+        }
+        for idx in (1..self.policy.max_files).rev() {
+            let src = archive_path(&self.path, idx);
+            let dst = archive_path(&self.path, idx + 1);
+            if src.exists() {
+                let _ = std::fs::rename(&src, &dst);
+            }
+        }
+        if self.path.exists() {
+            let _ = std::fs::rename(&self.path, archive_path(&self.path, 1));
+        }
+        self.writer = std::io::BufWriter::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&self.path)?,
+        );
+        self.size_bytes = 0;
+        Ok(())
+    }
+}
+
+fn archive_path(path: &Path, idx: usize) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "teolog.ndjson".to_string());
+    path.with_file_name(format!("{name}.{idx}"))
+}
+
+/// Emit NDJSON to a file with size-based rotation.
+pub struct RotatingFileSink {
+    inner: std::sync::Mutex<RotatingFileState>,
+}
+
+impl RotatingFileSink {
+    pub fn open(path: impl AsRef<Path>, policy: RotationPolicy) -> std::io::Result<Self> {
+        Ok(Self {
+            inner: std::sync::Mutex::new(RotatingFileState::open(path, policy)?),
+        })
+    }
+}
+
+impl Sink for RotatingFileSink {
+    fn emit(&self, event: &WideEvent) {
+        if let Ok(mut state) = self.inner.lock() {
+            let _ = state.emit_line(&event.to_json());
         }
     }
 }
@@ -224,5 +361,31 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"line 1\""));
         assert!(lines[1].contains("\"line 2\""));
+    }
+
+    #[test]
+    fn rotating_file_sink_rotates_and_keeps_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rotating.ndjson");
+        let sink = RotatingFileSink::open(&path, RotationPolicy::new(120, 2)).unwrap();
+
+        sink.emit(&WideEvent::new(
+            Level::Info,
+            "first event with enough bytes to rotate",
+        ));
+        sink.emit(&WideEvent::new(
+            Level::Info,
+            "second event with enough bytes to rotate",
+        ));
+        sink.emit(&WideEvent::new(
+            Level::Info,
+            "third event with enough bytes to rotate",
+        ));
+
+        let current = std::fs::read_to_string(&path).unwrap();
+        let archive1 = std::fs::read_to_string(dir.path().join("rotating.ndjson.1")).unwrap();
+        assert!(current.contains("third event"));
+        assert!(archive1.contains("second event"));
+        assert!(dir.path().join("rotating.ndjson.2").exists());
     }
 }

@@ -1,5 +1,9 @@
 // teolog — Cross-stack wide-event structured logging (TypeScript)
 
+import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
 export type Level = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
 /** Matches schema/wide-event.schema.json */
@@ -53,16 +57,23 @@ function hexEncode(bytes: Uint8Array): string {
 function captureSource(): { source: string; lnum: number } | undefined {
   const err = new Error();
   if (!err.stack) return undefined;
-  // Stack format varies by runtime. Look for the 4th line (skip Error, captureSource, caller, actual caller).
   const lines = err.stack.split('\n');
-  // Find first line that looks like a file path after skipping internal frames
-  for (let i = 3; i < lines.length; i++) {
+  for (let i = 2; i < lines.length; i++) {
     const line = lines[i];
-    // Node/Bun: "    at functionName (file:line:col)" or "    at file:line:col"
     const match = line.match(/\((.+):(\d+):\d+\)/) ?? line.match(/at\s+(.+):(\d+):\d+/);
-    if (match) {
-      return { source: match[1], lnum: parseInt(match[2], 10) };
+    if (!match) continue;
+
+    const source = match[1];
+    if (
+      source.includes('/teolog/ts/src/') ||
+      source.includes('/teolog/ts/dist/') ||
+      source.endsWith('/src/log.ts') ||
+      source.endsWith('\\src\\log.ts')
+    ) {
+      continue;
     }
+
+    return { source, lnum: parseInt(match[2], 10) };
   }
   return undefined;
 }
@@ -71,6 +82,99 @@ function captureSource(): { source: string; lnum: number } | undefined {
 
 export interface Sink {
   emit(event: WideEvent): void;
+}
+
+export interface LoggerOptions {
+  service?: string;
+  traceId?: string;
+}
+
+export function resolveXdgStatePath(appName: string, ...parts: string[]): string {
+  const xdgStateHome = process.env.XDG_STATE_HOME;
+  const stateRoot = xdgStateHome && xdgStateHome.length > 0 ? xdgStateHome : join(homedir(), '.local', 'state');
+  return join(stateRoot, appName, ...parts);
+}
+
+/** Append NDJSON events to file. Creates parent dir on first write. */
+export class FileSink implements Sink {
+  private filePath: string;
+
+  private constructor(filePath: string) {
+    this.filePath = filePath;
+  }
+
+  static open(filePath: string): FileSink {
+    mkdirSync(dirname(filePath), { recursive: true });
+    return new FileSink(filePath);
+  }
+
+  emit(event: WideEvent): void {
+    appendFileSync(this.filePath, `${JSON.stringify(event)}\n`, 'utf8');
+  }
+}
+
+export interface RotationOptions {
+  maxBytes?: number;
+  maxFiles?: number;
+}
+
+const DEFAULT_ROTATION_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_ROTATION_MAX_FILES = 5;
+
+function archivePath(filePath: string, index: number): string {
+  return `${filePath}.${index}`;
+}
+
+/** Append NDJSON to file with size-based rotation. */
+export class RotatingFileSink implements Sink {
+  private filePath: string;
+  private maxBytes: number;
+  private maxFiles: number;
+
+  private constructor(filePath: string, options: Required<RotationOptions>) {
+    this.filePath = filePath;
+    this.maxBytes = options.maxBytes;
+    this.maxFiles = options.maxFiles;
+  }
+
+  static open(filePath: string, options: RotationOptions = {}): RotatingFileSink {
+    mkdirSync(dirname(filePath), { recursive: true });
+    return new RotatingFileSink(filePath, {
+      maxBytes: options.maxBytes ?? DEFAULT_ROTATION_MAX_BYTES,
+      maxFiles: options.maxFiles ?? DEFAULT_ROTATION_MAX_FILES,
+    });
+  }
+
+  emit(event: WideEvent): void {
+    const line = `${JSON.stringify(event)}\n`;
+    const lineBytes = Buffer.byteLength(line, 'utf8');
+    const currentSize = existsSync(this.filePath) ? statSync(this.filePath).size : 0;
+
+    if (this.maxBytes > 0 && currentSize > 0 && currentSize + lineBytes > this.maxBytes) {
+      this.rotate();
+    }
+
+    appendFileSync(this.filePath, line, 'utf8');
+  }
+
+  private rotate(): void {
+    if (this.maxFiles === 0) {
+      writeFileSync(this.filePath, '', 'utf8');
+      return;
+    }
+
+    const oldest = archivePath(this.filePath, this.maxFiles);
+    if (existsSync(oldest)) rmSync(oldest);
+
+    for (let index = this.maxFiles - 1; index >= 1; index -= 1) {
+      const src = archivePath(this.filePath, index);
+      const dst = archivePath(this.filePath, index + 1);
+      if (existsSync(src)) renameSync(src, dst);
+    }
+
+    if (existsSync(this.filePath)) renameSync(this.filePath, archivePath(this.filePath, 1));
+    writeFileSync(this.filePath, '', 'utf8');
+  }
 }
 
 /** Emit to console with level-appropriate method. */
@@ -197,6 +301,10 @@ export class LogContext {
 
 // --- Logger ---
 
+function isLoggerOptions(value: LogContext | LoggerOptions | undefined): value is LoggerOptions {
+  return value !== undefined && !(value instanceof LogContext);
+}
+
 export class Logger {
   private project: string;
   private service?: string;
@@ -204,15 +312,19 @@ export class Logger {
   private sink: Sink;
   private context: LogContext;
 
+  constructor(project: string, sink?: Sink, options?: LoggerOptions);
+  constructor(project: string, sink: Sink | undefined, context: LogContext, options?: LoggerOptions);
   constructor(
     project: string,
     sink?: Sink,
-    context?: LogContext,
-    options?: { service?: string; traceId?: string },
+    contextOrOptions?: LogContext | LoggerOptions,
+    maybeOptions?: LoggerOptions,
   ) {
+    const options = isLoggerOptions(contextOrOptions) ? contextOrOptions : maybeOptions;
+
     this.project = project;
     this.sink = sink ?? new ConsoleSink();
-    this.context = context ?? new LogContext();
+    this.context = contextOrOptions instanceof LogContext ? contextOrOptions : new LogContext();
     this.service = options?.service;
     this.traceId = options?.traceId;
   }
@@ -247,8 +359,35 @@ export class Logger {
     });
   }
 
-  /** Emit a one-shot event. */
-  emit(level: Level, msg: string, data?: Record<string, unknown>): void {
+  withSpan<T>(name: string, context: Record<string, unknown> | undefined, run: (span: SpanBuilder) => T | Promise<T>): Promise<T>;
+  withSpan<T>(name: string, run: (span: SpanBuilder) => T | Promise<T>): Promise<T>;
+  async withSpan<T>(
+    name: string,
+    contextOrRun: Record<string, unknown> | ((span: SpanBuilder) => T | Promise<T>) | undefined,
+    maybeRun?: (span: SpanBuilder) => T | Promise<T>,
+  ): Promise<T> {
+    const context = typeof contextOrRun === 'function' ? undefined : contextOrRun;
+    const run = typeof contextOrRun === 'function' ? contextOrRun : maybeRun;
+    if (!run) throw new Error('logger.withSpan requires callback');
+
+    const span = this.span(name);
+    if (context) {
+      for (const [key, value] of Object.entries(context)) {
+        if (value !== undefined) span.set(key, value);
+      }
+    }
+
+    try {
+      const result = await run(span);
+      span.finish();
+      return result;
+    } catch (error) {
+      span.err(error).finish();
+      throw error;
+    }
+  }
+
+  private buildEvent(level: Level, msg: string, data?: Record<string, unknown>, err?: WideEvent['err']): WideEvent {
     const loc = captureSource();
     const event: WideEvent = {
       ts: new Date().toISOString(),
@@ -265,8 +404,14 @@ export class Logger {
     }
     const ctx = this.context.snapshot();
     if (Object.keys(ctx).length > 0) event.ctx = ctx;
-    if (data) event.data = data;
-    this.sink.emit(event);
+    if (data && Object.keys(data).length > 0) event.data = data;
+    if (err) event.err = err;
+    return event;
+  }
+
+  /** Emit a one-shot event. */
+  emit(level: Level, msg: string, data?: Record<string, unknown>): void {
+    this.sink.emit(this.buildEvent(level, msg, data));
   }
 
   info(msg: string, data?: Record<string, unknown>)  { this.emit('info', msg, data); }
@@ -280,7 +425,7 @@ export class Logger {
     const errDetails = err instanceof Error
       ? { message: err.message, kind: err.name, stack: err.stack }
       : { message: String(err) };
-    this.emit('error', msg, { ...data, error: errDetails });
+    this.sink.emit(this.buildEvent('error', msg, data, errDetails));
   }
 
   /** Internal: used by SpanBuilder. */
@@ -304,6 +449,7 @@ export class SpanBuilder {
   private name: string;
   private context: LogContext;
   private _data: Record<string, unknown> = {};
+  private _err?: WideEvent['err'];
   private started: number;
   private _traceId: string;
   private _spanId: string;
@@ -345,7 +491,7 @@ export class SpanBuilder {
 
   /** Record an error. */
   err(err: unknown): this {
-    this._data['error'] = err instanceof Error
+    this._err = err instanceof Error
       ? { message: err.message, kind: err.name, stack: err.stack }
       : { message: String(err) };
     return this;
@@ -363,10 +509,38 @@ export class SpanBuilder {
     });
   }
 
+  withSpan<T>(name: string, context: Record<string, unknown> | undefined, run: (span: SpanBuilder) => T | Promise<T>): Promise<T>;
+  withSpan<T>(name: string, run: (span: SpanBuilder) => T | Promise<T>): Promise<T>;
+  async withSpan<T>(
+    name: string,
+    contextOrRun: Record<string, unknown> | ((span: SpanBuilder) => T | Promise<T>) | undefined,
+    maybeRun?: (span: SpanBuilder) => T | Promise<T>,
+  ): Promise<T> {
+    const context = typeof contextOrRun === 'function' ? undefined : contextOrRun;
+    const run = typeof contextOrRun === 'function' ? contextOrRun : maybeRun;
+    if (!run) throw new Error('span.withSpan requires callback');
+
+    const child = this.span(name);
+    if (context) {
+      for (const [key, value] of Object.entries(context)) {
+        if (value !== undefined) child.set(key, value);
+      }
+    }
+
+    try {
+      const result = await run(child);
+      child.finish();
+      return result;
+    } catch (error) {
+      child.err(error).finish();
+      throw error;
+    }
+  }
+
   /** Emit the span event. */
   finish(): void {
     const dur_ms = Math.round(performance.now() - this.started);
-    const hasError = 'error' in this._data;
+    const hasError = this._err !== undefined;
     const ctx = this.context.snapshot();
 
     const event: WideEvent = {
@@ -386,6 +560,7 @@ export class SpanBuilder {
     }
     if (Object.keys(ctx).length > 0) event.ctx = ctx;
     if (Object.keys(this._data).length > 0) event.data = this._data;
+    if (this._err) event.err = this._err;
 
     this.logger._emitRaw(event);
   }

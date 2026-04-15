@@ -1,6 +1,21 @@
 import { test, expect, describe } from 'bun:test';
-import { Logger, SpanBuilder, CallbackSink, genTraceId, genSpanId, HttpSink } from './index.js';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Ajv2020 from 'ajv/dist/2020';
+import addFormats from 'ajv-formats';
+import { Logger, LogContext, genTraceId, genSpanId, HttpSink, RotatingFileSink } from './index.js';
 import type { WideEvent, Sink } from './index.js';
+
+const ajv = new Ajv2020({ strict: true });
+addFormats(ajv);
+const schema = JSON.parse(readFileSync(new URL('../../schema/wide-event.schema.json', import.meta.url), 'utf8'));
+const validateEvent = ajv.compile<WideEvent>(schema);
+
+function expectSchemaValid(event: WideEvent): void {
+  const ok = validateEvent(event);
+  expect(ok, JSON.stringify(validateEvent.errors, null, 2)).toBe(true);
+}
 
 /** Collect events for assertions. */
 class CollectSink implements Sink {
@@ -46,16 +61,26 @@ describe('Logger', () => {
 
   test('service propagates to events', () => {
     const sink = new CollectSink();
-    const log = new Logger('test', sink, undefined, { service: 'my-svc' });
+    const log = new Logger('test', sink, { service: 'my-svc' });
     log.info('hello');
 
     expect(sink.events[0].service).toBe('my-svc');
   });
 
+  test('constructor still accepts explicit context plus options', () => {
+    const sink = new CollectSink();
+    const context = new LogContext().set('user_id', 'abc');
+    const log = new Logger('test', sink, context, { service: 'my-svc' });
+    log.info('hello');
+
+    expect(sink.events[0].service).toBe('my-svc');
+    expect(sink.events[0].ctx?.['user_id']).toBe('abc');
+  });
+
   test('shared trace_id propagates', () => {
     const sink = new CollectSink();
     const tid = 'aaaa1111bbbb2222cccc3333dddd4444';
-    const log = new Logger('test', sink, undefined, { traceId: tid });
+    const log = new Logger('test', sink, { traceId: tid });
     log.info('first');
     log.info('second');
 
@@ -63,6 +88,26 @@ describe('Logger', () => {
     expect(sink.events[1].trace_id).toBe(tid);
     // But different span_ids
     expect(sink.events[0].span_id).not.toBe(sink.events[1].span_id);
+  });
+
+  test('errorWith uses top-level err and matches schema', () => {
+    const sink = new CollectSink();
+    const log = new Logger('test', sink);
+    log.errorWith('failed', new Error('boom'), { step: 'parse' });
+
+    const e = sink.events[0];
+    expect(e.err?.message).toBe('boom');
+    expect(e.data?.['step']).toBe('parse');
+    expect(e.data?.['error']).toBeUndefined();
+    expectSchemaValid(e);
+  });
+
+  test('one-shot event matches schema', () => {
+    const sink = new CollectSink();
+    const log = new Logger('test', sink);
+    log.info('hello');
+
+    expectSchemaValid(sink.events[0]);
   });
 });
 
@@ -116,6 +161,39 @@ describe('SpanBuilder', () => {
     expect(span.spanId).toHaveLength(16);
     expect(span.traceId).toHaveLength(32);
     span.finish();
+  });
+
+  test('error span uses top-level err and matches schema', () => {
+    const sink = new CollectSink();
+    const log = new Logger('test', sink);
+    const span = log.span('op');
+
+    span.addData('step', 'parse');
+    span.err(new Error('boom'));
+    span.finish();
+
+    const e = sink.events[0];
+    expect(e.lvl).toBe('error');
+    expect(e.err?.message).toBe('boom');
+    expect(e.data?.['step']).toBe('parse');
+    expect(e.data?.['error']).toBeUndefined();
+    expectSchemaValid(e);
+  });
+});
+
+describe('RotatingFileSink', () => {
+  test('rotates and keeps archives', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'teolog-rotate-'));
+    const path = join(dir, 'events.ndjson');
+    const sink = RotatingFileSink.open(path, { maxBytes: 120, maxFiles: 2 });
+
+    sink.emit({ ts: new Date().toISOString(), lvl: 'info', msg: 'first event with enough bytes to rotate' });
+    sink.emit({ ts: new Date().toISOString(), lvl: 'info', msg: 'second event with enough bytes to rotate' });
+    sink.emit({ ts: new Date().toISOString(), lvl: 'info', msg: 'third event with enough bytes to rotate' });
+
+    expect(readFileSync(path, 'utf8')).toContain('third event');
+    expect(readFileSync(`${path}.1`, 'utf8')).toContain('second event');
+    expect(readFileSync(`${path}.2`, 'utf8')).toContain('first event');
   });
 });
 
