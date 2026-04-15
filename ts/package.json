@@ -6,17 +6,28 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
-    "./svelte": "./dist/svelte.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./svelte": {
+      "types": "./dist/svelte.d.ts",
+      "default": "./dist/svelte.js"
+    }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "bun build src/index.ts src/svelte.ts --outdir dist --target browser",
+    "build": "rm -rf dist && bun build src/index.ts src/svelte.ts --outdir dist --target node && tsc --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
   },
   "license": "MIT"
 }
