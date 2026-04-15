@@ -1,0 +1,8 @@
+[workspace]
+members = ["crate"]
+resolver = "2"
+
+[workspace.package]
+license = "MIT"
+repository = "https://github.com/oleksiiluchnikov/teolog"
+homepage = "https://github.com/oleksiiluchnikov/teolog"

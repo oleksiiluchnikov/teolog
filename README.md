@@ -2,6 +2,11 @@
 
 Cross-stack wide-event structured logging. One NDJSON format, three implementations.
 
+Repo layout:
+- Rust crate: `crate/`
+- TypeScript package: `ts/`
+- Root helpers: Cargo workspace + Bun workspace for smoother local consumption
+
 ## What
 
 teolog emits **wide events** — single JSON objects per operation that capture all context, data, timing, and errors in one line. No scattered `log.info` breadcrumbs. Every event is self-contained and queryable with `jq`.
@@ -258,6 +263,36 @@ just build
 ```
 
 ## Install and release flow
+
+## Consumption from other repos
+
+### Local repos
+
+Rust:
+```toml
+[dependencies]
+teolog = { path = "../teolog/crate" }
+```
+
+TypeScript / Bun:
+```bash
+bun add ../teolog/ts
+```
+
+### Remote packages
+
+Current repo is split by stack:
+- Rust package lives in `crate/`
+- TypeScript package lives in `ts/`
+
+Cleanest distribution path:
+- publish Rust crate from `crate/` to crates.io
+- publish TypeScript package from `ts/` to npm
+
+Repo root now includes:
+- `Cargo.toml` workspace for smoother Rust tooling
+- `package.json` Bun workspace for smoother JS tooling
+
 
 ```bash
 # Local install
