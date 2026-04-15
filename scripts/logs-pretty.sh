@@ -8,7 +8,7 @@
 #   cargo run 2>&1 | logs-pretty.sh
 
 if ! command -v jq &>/dev/null; then
-  echo "jq is required. Install: brew install jq" >&2
+  printf 'jq is required. Install: brew install jq\n' >&2
   exit 1
 fi
 
@@ -20,7 +20,7 @@ jq -R 'fromjson? | select(. != null) |
   ([.ctx // {} | to_entries[] | "\(.key)=\(.value)"] | join(" ")) as $ctx_str |
 
   # Build data summary (skip nested objects, show scalars)
-  ([.data // {} | to_entries[] | select(.key != "error") |
+  ([.data // {} | to_entries[] |
     if (.value | type) == "object" or (.value | type) == "array"
     then "\(.key)=..."
     else "\(.key)=\(.value)"
@@ -39,7 +39,7 @@ jq -R 'fromjson? | select(. != null) |
   else "" end) as $details |
 
   # Error details
-  (if .data.error.message then " \u001b[31m(" + .data.error.message + ")\u001b[0m" else "" end) as $err |
+  (if (.err.message // .data.error.message) then " \u001b[31m(" + (.err.message // .data.error.message) + ")\u001b[0m" else "" end) as $err |
 
   # Project tag
   (if .project then "\u001b[90m" + .project + "\u001b[0m " else "" end) as $proj |

@@ -1,9 +1,9 @@
 use crate::context::LogContext;
 use crate::id;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Log level matching the shared schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Trace,
@@ -27,7 +27,7 @@ impl std::fmt::Display for Level {
 
 /// A single wide event — the core data structure.
 /// Matches `schema/wide-event.schema.json`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WideEvent {
     pub ts: String,
     pub lvl: Level,
@@ -67,7 +67,7 @@ pub struct WideEvent {
     pub ctx: Option<serde_json::Value>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
+    pub data: Option<serde_json::Map<String, serde_json::Value>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub err: Option<serde_json::Value>,
@@ -150,8 +150,13 @@ impl WideEvent {
         self
     }
 
-    pub fn with_data(mut self, data: serde_json::Value) -> Self {
+    pub fn with_data(mut self, data: serde_json::Map<String, serde_json::Value>) -> Self {
         self.data = Some(data);
+        self
+    }
+
+    pub fn with_err(mut self, err: serde_json::Value) -> Self {
+        self.err = Some(err);
         self
     }
 
