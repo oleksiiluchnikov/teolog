@@ -6,7 +6,7 @@ default:
 # === Quality ===
 
 # Run all checks (lint + typecheck + test)
-qa: lint check test-rust
+qa: lint check test
 
 # Typecheck all stacks
 check: check-rust check-ts
@@ -35,14 +35,27 @@ fmt-ts:
 # === Tests ===
 
 # Run all tests
-test: test-rust
+test: test-rust test-ts test-shell
 
 test-rust:
-    cargo test --manifest-path crate/Cargo.toml
+    cargo test --manifest-path crate/Cargo.toml --all-targets
+
+test-ts:
+    cd ts && bun test
+
+test-shell:
+    bash scripts/test-analyze-logs.sh
+    bash scripts/test-opencode-plugin-rotation.sh
 
 # === Build ===
 
 build: build-rust build-ts
+
+sync-opencode-plugin:
+    bash scripts/sync-opencode-plugin.sh
+
+smoke-agent-loop:
+    bash scripts/smoke-agent-loop.sh
 
 build-rust:
     cargo build --manifest-path crate/Cargo.toml --release

@@ -13,7 +13,9 @@ pub use context::LogContext;
 pub use event::{Level, WideEvent};
 pub use id::{gen_span_id, gen_trace_id};
 pub use macros::{is_verbose, set_verbose};
-pub use sink::{FileSink, MultiSink, Sink, StderrSink, StdoutSink, WriterSink};
+pub use sink::{
+    FileSink, MultiSink, RotatingFileSink, RotationPolicy, Sink, StderrSink, StdoutSink, WriterSink,
+};
 
 #[cfg(feature = "http-sink")]
 pub use sink::HttpSink;
@@ -89,12 +91,14 @@ impl Logger {
             name: name.to_string(),
             context: self.context.clone(),
             data: serde_json::Map::new(),
+            err: None,
             started: std::time::Instant::now(),
             trace_id: self.resolve_trace_id(),
             span_id: id::gen_span_id(),
             parent_id: None,
             source: Some(caller.file().to_string()),
             lnum: Some(caller.line()),
+            finished: false,
         }
     }
 
@@ -113,9 +117,14 @@ impl Logger {
         self.sink.emit(&event);
     }
 
-    /// Emit with data.
+    /// Emit with object data.
     #[track_caller]
-    pub fn emit_with(&self, level: Level, msg: &str, data: serde_json::Value) {
+    pub fn emit_with(
+        &self,
+        level: Level,
+        msg: &str,
+        data: serde_json::Map<String, serde_json::Value>,
+    ) {
         let caller = std::panic::Location::caller();
         let mut event = WideEvent::new(level, msg)
             .with_project(&self.project)
@@ -129,25 +138,92 @@ impl Logger {
         self.sink.emit(&event);
     }
 
+    /// Emit with object data built from key-value fields.
+    #[track_caller]
+    pub fn emit_fields<K, V, I>(&self, level: Level, msg: &str, fields: I)
+    where
+        K: Into<String>,
+        V: Into<serde_json::Value>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        let data = fields
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect();
+        self.emit_with(level, msg, data);
+    }
+
     #[track_caller]
     pub fn info(&self, msg: &str) {
         self.emit(Level::Info, msg);
+    }
+
+    #[track_caller]
+    pub fn info_fields<K, V, I>(&self, msg: &str, fields: I)
+    where
+        K: Into<String>,
+        V: Into<serde_json::Value>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        self.emit_fields(Level::Info, msg, fields);
     }
     #[track_caller]
     pub fn warn(&self, msg: &str) {
         self.emit(Level::Warn, msg);
     }
+
+    #[track_caller]
+    pub fn warn_fields<K, V, I>(&self, msg: &str, fields: I)
+    where
+        K: Into<String>,
+        V: Into<serde_json::Value>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        self.emit_fields(Level::Warn, msg, fields);
+    }
+
     #[track_caller]
     pub fn error(&self, msg: &str) {
         self.emit(Level::Error, msg);
     }
+
+    #[track_caller]
+    pub fn error_fields<K, V, I>(&self, msg: &str, fields: I)
+    where
+        K: Into<String>,
+        V: Into<serde_json::Value>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        self.emit_fields(Level::Error, msg, fields);
+    }
+
     #[track_caller]
     pub fn debug(&self, msg: &str) {
         self.emit(Level::Debug, msg);
     }
+
+    #[track_caller]
+    pub fn debug_fields<K, V, I>(&self, msg: &str, fields: I)
+    where
+        K: Into<String>,
+        V: Into<serde_json::Value>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        self.emit_fields(Level::Debug, msg, fields);
+    }
     #[track_caller]
     pub fn trace(&self, msg: &str) {
         self.emit(Level::Trace, msg);
+    }
+
+    #[track_caller]
+    pub fn trace_fields<K, V, I>(&self, msg: &str, fields: I)
+    where
+        K: Into<String>,
+        V: Into<serde_json::Value>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        self.emit_fields(Level::Trace, msg, fields);
     }
 }
 
@@ -157,12 +233,14 @@ pub struct SpanBuilder<'a> {
     name: String,
     context: LogContext,
     data: serde_json::Map<String, serde_json::Value>,
+    err: Option<serde_json::Value>,
     started: std::time::Instant,
     trace_id: String,
     span_id: String,
     parent_id: Option<String>,
     source: Option<String>,
     lnum: Option<u32>,
+    finished: bool,
 }
 
 impl<'a> SpanBuilder<'a> {
@@ -180,23 +258,17 @@ impl<'a> SpanBuilder<'a> {
 
     /// Record an error on this span.
     pub fn err(&mut self, err: &dyn std::error::Error) -> &mut Self {
-        self.data.insert(
-            "error".to_string(),
-            serde_json::json!({
-                "message": err.to_string(),
-            }),
-        );
+        self.err = Some(serde_json::json!({
+            "message": err.to_string(),
+        }));
         self
     }
 
     /// Record an error message string on this span.
     pub fn err_msg(&mut self, msg: &str) -> &mut Self {
-        self.data.insert(
-            "error".to_string(),
-            serde_json::json!({
-                "message": msg,
-            }),
-        );
+        self.err = Some(serde_json::json!({
+            "message": msg,
+        }));
         self
     }
 
@@ -220,25 +292,20 @@ impl<'a> SpanBuilder<'a> {
             name: name.to_string(),
             context: self.context.child(),
             data: serde_json::Map::new(),
+            err: None,
             started: std::time::Instant::now(),
             trace_id: self.trace_id.clone(),
             span_id: id::gen_span_id(),
             parent_id: Some(self.span_id.clone()),
             source: Some(caller.file().to_string()),
             lnum: Some(caller.line()),
+            finished: false,
         }
     }
 
-    /// Emit the span event now (consumes the builder, skipping drop).
-    pub fn finish(self) {
-        // drop triggers emit
-    }
-}
-
-impl Drop for SpanBuilder<'_> {
-    fn drop(&mut self) {
+    fn build_event(&self) -> WideEvent {
         let dur = self.started.elapsed();
-        let level = if self.data.contains_key("error") {
+        let level = if self.err.is_some() {
             Level::Error
         } else {
             Level::Info
@@ -262,10 +329,33 @@ impl Drop for SpanBuilder<'_> {
             event = event.with_source(src, self.lnum.unwrap_or(0));
         }
         if !self.data.is_empty() {
-            event = event.with_data(serde_json::Value::Object(self.data.clone()));
+            event = event.with_data(self.data.clone());
+        }
+        if let Some(ref err) = self.err {
+            event = event.with_err(err.clone());
         }
 
+        event
+    }
+
+    fn emit_once(&mut self) {
+        if self.finished {
+            return;
+        }
+        let event = self.build_event();
         self.logger.sink.emit(&event);
+        self.finished = true;
+    }
+
+    /// Emit span event now. Subsequent drop will not emit again.
+    pub fn finish(mut self) {
+        self.emit_once();
+    }
+}
+
+impl Drop for SpanBuilder<'_> {
+    fn drop(&mut self) {
+        self.emit_once();
     }
 }
 
@@ -356,5 +446,54 @@ mod tests {
         );
         // But different span_ids
         assert_ne!(e1["span_id"], e2["span_id"]);
+    }
+
+    #[test]
+    fn finish_emits_once() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let log = init("test").with_sink(CollectSink(events.clone()));
+
+        {
+            let span = log.span("once");
+            span.finish();
+        }
+
+        assert_eq!(events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn emit_fields_builds_object_data() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let log = init("test").with_sink(CollectSink(events.clone()));
+
+        log.info_fields(
+            "loaded",
+            [
+                ("count", serde_json::json!(3)),
+                ("source", serde_json::json!("disk")),
+            ],
+        );
+        log.warn_fields("warned", [("step", serde_json::json!("parse"))]);
+        log.error_fields("failed", [("code", serde_json::json!(500))]);
+        log.debug_fields("debugged", [("enabled", serde_json::json!(true))]);
+        log.trace_fields("traced", [("phase", serde_json::json!("collect"))]);
+
+        let evts = events.lock().unwrap();
+        let info: serde_json::Value = serde_json::from_str(&evts[0]).unwrap();
+        let warn: serde_json::Value = serde_json::from_str(&evts[1]).unwrap();
+        let error: serde_json::Value = serde_json::from_str(&evts[2]).unwrap();
+        let debug: serde_json::Value = serde_json::from_str(&evts[3]).unwrap();
+        let trace: serde_json::Value = serde_json::from_str(&evts[4]).unwrap();
+
+        assert_eq!(info["data"]["count"], 3);
+        assert_eq!(info["data"]["source"], "disk");
+        assert_eq!(warn["lvl"], "warn");
+        assert_eq!(warn["data"]["step"], "parse");
+        assert_eq!(error["lvl"], "error");
+        assert_eq!(error["data"]["code"], 500);
+        assert_eq!(debug["lvl"], "debug");
+        assert_eq!(debug["data"]["enabled"], true);
+        assert_eq!(trace["lvl"], "trace");
+        assert_eq!(trace["data"]["phase"], "collect");
     }
 }
