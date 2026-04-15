@@ -4,12 +4,17 @@ version = "0.1.0"
 edition = "2021"
 description = "Cross-stack wide-event structured logging for Rust, TypeScript, and Lua"
 license = "MIT"
+repository = "https://github.com/oleksiiluchnikov/teolog"
+homepage = "https://github.com/oleksiiluchnikov/teolog"
+documentation = "https://docs.rs/teolog"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 getrandom = "0.2"
+clap = { version = "4", features = ["derive"] }
+regex = "1"
 ureq = { version = "2", optional = true }
 
 [features]
@@ -18,3 +23,4 @@ http-sink = ["ureq"]
 
 [dev-dependencies]
 tempfile = "3"
+jsonschema = "0.18"
