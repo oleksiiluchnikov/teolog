@@ -11,7 +11,7 @@ use teolog::WideEvent;
 
 #[derive(Parser, Debug)]
 #[command(name = "teolog")]
-#[command(about = "Agentic CLI for compact teolog log queries and Pi bootstrap")]
+#[command(about = "Compact CLI for teolog log queries")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -26,8 +26,6 @@ enum Commands {
     Trace(TraceCommand),
     Summary(SummaryCommand),
     Monitor(MonitorCommand),
-    #[command(alias = "init")]
-    Bootstrap(BootstrapCommand),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -77,22 +75,6 @@ struct SummaryCommand {
 }
 
 #[derive(Args, Debug, Clone)]
-struct BootstrapCommand {
-    #[arg(long, default_value = ".")]
-    project_dir: PathBuf,
-    #[arg(long, default_value = ".teolog/pi.ndjson")]
-    log_file: PathBuf,
-    #[arg(long, value_enum, default_value_t = RuntimeTarget::Pi)]
-    runtime: RuntimeTarget,
-    #[arg(long)]
-    sync_opencode_live: bool,
-    #[arg(long)]
-    force: bool,
-    #[command(flatten)]
-    render: RenderArgs,
-}
-
-#[derive(Args, Debug, Clone)]
 struct MonitorCommand {
     path: Option<PathBuf>,
     #[arg(long, default_value_t = 1000)]
@@ -131,13 +113,6 @@ enum OutputFormat {
     Table,
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeTarget {
-    Pi,
-    Opencode,
-    All,
-}
-
 #[derive(Debug, Clone)]
 struct LoadedEvent {
     event: WideEvent,
@@ -145,26 +120,10 @@ struct LoadedEvent {
     text: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct BootstrapResult {
-    project_dir: String,
-    runtime: String,
-    written_paths: Vec<String>,
-    unchanged_paths: Vec<String>,
-    log_file: String,
-    next_steps: Vec<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MonitorState {
     log_file: String,
     events_seen: usize,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum WriteStatus {
-    Written,
-    Unchanged,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -177,7 +136,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Trace(cmd) => cmd_trace(cmd)?,
         Commands::Summary(cmd) => cmd_summary(cmd)?,
         Commands::Monitor(cmd) => cmd_monitor(cmd)?,
-        Commands::Bootstrap(cmd) => cmd_bootstrap(cmd)?,
     }
     Ok(())
 }
@@ -322,125 +280,6 @@ fn cmd_monitor(cmd: MonitorCommand) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_bootstrap(cmd: BootstrapCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let project_dir = cmd.project_dir.canonicalize().or_else(|_| {
-        let cwd = std::env::current_dir()?;
-        Ok::<PathBuf, io::Error>(cwd.join(&cmd.project_dir))
-    })?;
-    let gitignore_dir = project_dir.join(cmd.log_file.parent().unwrap_or_else(|| Path::new(".")));
-    let gitignore_path = gitignore_dir.join(".gitignore");
-    fs::create_dir_all(&gitignore_dir)?;
-    fs::write(&gitignore_path, "*.ndjson\n")?;
-
-    let mut written_paths = vec![gitignore_path.display().to_string()];
-    let mut unchanged_paths = Vec::new();
-    let runtime_targets = match cmd.runtime {
-        RuntimeTarget::Pi => vec![RuntimeTarget::Pi],
-        RuntimeTarget::Opencode => vec![RuntimeTarget::Opencode],
-        RuntimeTarget::All => vec![RuntimeTarget::Pi, RuntimeTarget::Opencode],
-    };
-
-    for target in runtime_targets {
-        match target {
-            RuntimeTarget::Pi => {
-                let extension_dir = project_dir.join(".pi/extensions/teolog");
-                let extension_path = extension_dir.join("index.ts");
-                if extension_path.exists() && !cmd.force {
-                    return Err(format!(
-                        "bootstrap target exists at {}. Use --force to overwrite.",
-                        extension_path.display()
-                    )
-                    .into());
-                }
-                fs::create_dir_all(&extension_dir)?;
-                let template = include_str!("../../templates/pi-extension.ts")
-                    .replace("__LOG_FILE__", &cmd.log_file.to_string_lossy())
-                    .replace(
-                        "__PROJECT__",
-                        project_dir
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("project"),
-                    );
-                fs::write(&extension_path, template)?;
-                written_paths.push(extension_path.display().to_string());
-            }
-            RuntimeTarget::Opencode => {
-                let tools_dir = project_dir.join("tools");
-                let plugin_path = tools_dir.join("teolog.ts");
-                if plugin_path.exists() && !cmd.force {
-                    return Err(format!(
-                        "bootstrap target exists at {}. Use --force to overwrite.",
-                        plugin_path.display()
-                    )
-                    .into());
-                }
-                fs::create_dir_all(&tools_dir)?;
-                let template = include_str!("../../templates/opencode-plugin.ts")
-                    .replace("__LOG_FILE__", &cmd.log_file.to_string_lossy())
-                    .replace(
-                        "__PROJECT__",
-                        project_dir
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("project"),
-                    );
-                fs::write(&plugin_path, &template)?;
-                written_paths.push(plugin_path.display().to_string());
-
-                if cmd.sync_opencode_live {
-                    let live_dir = opencode_plugins_dir();
-                    let live_path = live_dir.join("teolog.ts");
-                    fs::create_dir_all(&live_dir)?;
-                    match write_string_if_changed(&live_path, &template)? {
-                        WriteStatus::Written => written_paths.push(live_path.display().to_string()),
-                        WriteStatus::Unchanged => {
-                            unchanged_paths.push(live_path.display().to_string())
-                        }
-                    }
-                }
-            }
-            RuntimeTarget::All => unreachable!(),
-        }
-    }
-
-    let runtime_name = match cmd.runtime {
-        RuntimeTarget::Pi => "pi",
-        RuntimeTarget::Opencode => "opencode",
-        RuntimeTarget::All => "all",
-    };
-    let next_steps = vec![
-        "Build or install teolog CLI so `teolog` is on PATH".to_string(),
-        match cmd.runtime {
-            RuntimeTarget::Pi => "Run `/reload` in pi inside the project".to_string(),
-            RuntimeTarget::Opencode if cmd.sync_opencode_live => {
-                "Restart OpenCode or start a new session to load the synced plugin".to_string()
-            }
-            RuntimeTarget::Opencode => {
-                "Sync or copy tools/teolog.ts into your OpenCode plugins directory".to_string()
-            }
-            RuntimeTarget::All if cmd.sync_opencode_live => {
-                "Reload pi and restart OpenCode or start a new session".to_string()
-            }
-            RuntimeTarget::All => {
-                "Reload pi and sync tools/teolog.ts into your OpenCode plugins directory"
-                    .to_string()
-            }
-        },
-        "Use teolog_status / teolog_summary tools from the agent runtime".to_string(),
-    ];
-
-    let value = serde_json::to_value(BootstrapResult {
-        project_dir: project_dir.display().to_string(),
-        runtime: runtime_name.to_string(),
-        written_paths,
-        unchanged_paths,
-        log_file: project_dir.join(&cmd.log_file).display().to_string(),
-        next_steps,
-    })?;
-    render_value(value, &cmd.render)
-}
-
 fn resolve_log_file(path: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Some(path) = path {
         if path.exists() {
@@ -476,16 +315,6 @@ fn dirs_home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn xdg_config_home() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs_home().join(".config"))
-}
-
-fn opencode_plugins_dir() -> PathBuf {
-    xdg_config_home().join("opencode/plugins")
 }
 
 fn resolve_monitor_state_path(
@@ -526,20 +355,6 @@ fn save_monitor_state(
     };
     fs::write(path, serde_json::to_string_pretty(&state)?)?;
     Ok(())
-}
-
-fn write_string_if_changed(
-    path: &Path,
-    content: &str,
-) -> Result<WriteStatus, Box<dyn std::error::Error>> {
-    if path.exists() && fs::read_to_string(path)? == content {
-        return Ok(WriteStatus::Unchanged);
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)?;
-    Ok(WriteStatus::Written)
 }
 
 fn load_events(path: &Path) -> Result<Vec<LoadedEvent>, Box<dyn std::error::Error>> {

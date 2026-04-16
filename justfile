@@ -45,17 +45,10 @@ test-ts:
 
 test-shell:
     bash scripts/test-analyze-logs.sh
-    bash scripts/test-opencode-plugin-rotation.sh
 
 # === Build ===
 
 build: build-rust build-ts
-
-sync-opencode-plugin:
-    bash scripts/sync-opencode-plugin.sh
-
-smoke-agent-loop:
-    bash scripts/smoke-agent-loop.sh
 
 build-rust:
     cargo build --manifest-path crate/Cargo.toml --release
