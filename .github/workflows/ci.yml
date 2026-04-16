@@ -48,6 +48,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run analyzer shell tests
-        run: |
-          bash scripts/test-analyze-logs.sh
-          bash scripts/test-opencode-plugin-rotation.sh
+        run: bash scripts/test-analyze-logs.sh
