@@ -126,25 +126,63 @@ struct MonitorState {
     events_seen: usize,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-    match cli.command {
-        Commands::Status(cmd) => cmd_status(cmd)?,
-        Commands::Recent(cmd) => cmd_recent(cmd)?,
-        Commands::Errors(cmd) => cmd_errors(cmd)?,
-        Commands::Search(cmd) => cmd_search(cmd)?,
-        Commands::Trace(cmd) => cmd_trace(cmd)?,
-        Commands::Summary(cmd) => cmd_summary(cmd)?,
-        Commands::Monitor(cmd) => cmd_monitor(cmd)?,
+fn main() -> std::process::ExitCode {
+    let argv: Vec<String> = std::env::args().collect();
+    let json_mode = argv.iter().any(|arg| arg == "--json");
+
+    let cli = match Cli::try_parse_from(&argv) {
+        Ok(cli) => cli,
+        Err(error) => {
+            if json_mode {
+                emit_json_error("parse", "parse", &error.to_string());
+            } else {
+                let _ = error.print();
+            }
+            return std::process::ExitCode::from(2);
+        }
+    };
+
+    let command = command_name(&cli.command);
+    let result = match cli.command {
+        Commands::Status(cmd) => cmd_status(cmd),
+        Commands::Recent(cmd) => cmd_recent(cmd),
+        Commands::Errors(cmd) => cmd_errors(cmd),
+        Commands::Search(cmd) => cmd_search(cmd),
+        Commands::Trace(cmd) => cmd_trace(cmd),
+        Commands::Summary(cmd) => cmd_summary(cmd),
+        Commands::Monitor(cmd) => cmd_monitor(cmd),
+    };
+
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            if json_mode {
+                emit_json_error(command, "runtime", &error.to_string());
+            } else {
+                eprintln!("Error: {error}");
+            }
+            std::process::ExitCode::from(1)
+        }
     }
-    Ok(())
+}
+
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::Status(_) => "status",
+        Commands::Recent(_) => "recent",
+        Commands::Errors(_) => "errors",
+        Commands::Search(_) => "search",
+        Commands::Trace(_) => "trace",
+        Commands::Summary(_) => "summary",
+        Commands::Monitor(_) => "monitor",
+    }
 }
 
 fn cmd_status(cmd: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
     let path = resolve_log_file(cmd.path)?;
     let events = load_events(&path)?;
     let value = build_status_value(&path, &events);
-    render_value(value, &cmd.render)
+    render_value("status", value, &cmd.render)
 }
 
 fn cmd_recent(cmd: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -157,7 +195,7 @@ fn cmd_recent(cmd: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
     .into_iter()
     .map(|loaded| loaded.raw.clone())
     .collect();
-    render_rows(rows, &cmd.render)
+    render_rows("recent", rows, &cmd.render)
 }
 
 fn cmd_errors(cmd: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -170,7 +208,7 @@ fn cmd_errors(cmd: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
         .take(cmd.limit)
         .map(|loaded| loaded.raw.clone())
         .collect();
-    render_rows(rows, &cmd.render)
+    render_rows("errors", rows, &cmd.render)
 }
 
 fn cmd_search(cmd: SearchCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -186,7 +224,7 @@ fn cmd_search(cmd: SearchCommand) -> Result<(), Box<dyn std::error::Error>> {
         .take(cmd.limit)
         .map(|loaded| loaded.raw.clone())
         .collect();
-    render_rows(rows, &cmd.render)
+    render_rows("search", rows, &cmd.render)
 }
 
 fn cmd_trace(cmd: TraceCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -206,13 +244,13 @@ fn cmd_trace(cmd: TraceCommand) -> Result<(), Box<dyn std::error::Error>> {
 
     if cmd.summary_only {
         let value = build_trace_summary_value(&path, &matching);
-        render_value(value, &cmd.render)
+        render_value("trace", value, &cmd.render)
     } else {
         let rows = matching
             .into_iter()
             .map(|loaded| loaded.raw.clone())
             .collect();
-        render_rows(rows, &cmd.render)
+        render_rows("trace", rows, &cmd.render)
     }
 }
 
@@ -227,7 +265,7 @@ fn cmd_summary(cmd: SummaryCommand) -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     let value = build_summary_value(&path, &filtered, cmd.limit, cmd.slow_ms);
-    render_value(value, &cmd.render)
+    render_value("summary", value, &cmd.render)
 }
 
 fn cmd_monitor(cmd: MonitorCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -264,7 +302,7 @@ fn cmd_monitor(cmd: MonitorCommand) -> Result<(), Box<dyn std::error::Error>> {
                 previous_len,
                 events.len(),
             );
-            render_monitor_value(value, &cmd.render)?;
+            render_monitor_value("monitor", value, &cmd.render)?;
             previous_len = events.len();
             if let Some(state_path) = state_path.as_ref() {
                 save_monitor_state(state_path, &path, previous_len)?;
@@ -353,7 +391,7 @@ fn save_monitor_state(
         log_file: normalize_path_for_state(log_file),
         events_seen,
     };
-    fs::write(path, serde_json::to_string_pretty(&state)?)?;
+    fs::write(path, serde_json::to_string(&state)?)?;
     Ok(())
 }
 
@@ -531,7 +569,40 @@ fn build_monitor_value(
     })
 }
 
-fn render_rows(rows: Vec<Value>, render: &RenderArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn emit_json_success(command: &str, data: Value) {
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "ok": true,
+            "command": command,
+            "version": env!("CARGO_PKG_VERSION"),
+            "data": data,
+        }))
+        .expect("serialize success envelope")
+    );
+}
+
+fn emit_json_error(command: &str, kind: &str, message: &str) {
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "ok": false,
+            "command": command,
+            "version": env!("CARGO_PKG_VERSION"),
+            "error": {
+                "kind": kind,
+                "message": message,
+            }
+        }))
+        .expect("serialize error envelope")
+    );
+}
+
+fn render_rows(
+    command: &str,
+    rows: Vec<Value>,
+    render: &RenderArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     if render.count {
         println!("{}", rows.len());
         return Ok(());
@@ -542,7 +613,7 @@ fn render_rows(rows: Vec<Value>, render: &RenderArgs) -> Result<(), Box<dyn std:
         .collect::<Vec<_>>();
     let output = resolve_output(render);
     match output {
-        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&projected)?),
+        OutputFormat::Json => emit_json_success(command, Value::Array(projected)),
         OutputFormat::Compact => println!("{}", serde_json::to_string(&projected)?),
         OutputFormat::Ndjson => {
             for row in projected {
@@ -554,7 +625,11 @@ fn render_rows(rows: Vec<Value>, render: &RenderArgs) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-fn render_value(value: Value, render: &RenderArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn render_value(
+    command: &str,
+    value: Value,
+    render: &RenderArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     if render.count {
         let count = match &value {
             Value::Array(rows) => rows.len() as u64,
@@ -566,7 +641,7 @@ fn render_value(value: Value, render: &RenderArgs) -> Result<(), Box<dyn std::er
     }
     let projected = project_fields(value, render.fields.as_deref());
     match resolve_output(render) {
-        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&projected)?),
+        OutputFormat::Json => emit_json_success(command, projected),
         OutputFormat::Compact => println!("{}", serde_json::to_string(&projected)?),
         OutputFormat::Ndjson => println!("{}", serde_json::to_string(&projected)?),
         OutputFormat::Table => print_value_table(&projected),
@@ -575,13 +650,15 @@ fn render_value(value: Value, render: &RenderArgs) -> Result<(), Box<dyn std::er
 }
 
 fn render_monitor_value(
+    command: &str,
     value: Value,
     render: &RenderArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output = resolve_output(render);
     let projected = project_fields(value, render.fields.as_deref());
     match output {
-        OutputFormat::Json | OutputFormat::Compact | OutputFormat::Ndjson => {
+        OutputFormat::Json => emit_json_success(command, projected),
+        OutputFormat::Compact | OutputFormat::Ndjson => {
             println!("{}", serde_json::to_string(&projected)?);
         }
         OutputFormat::Table => {
