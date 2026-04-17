@@ -22,8 +22,10 @@ fn status_outputs_json() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("\"events\": 2"));
-    assert!(stdout.contains("\"unique_traces\": 2"));
+    assert!(stdout.contains("\"ok\":true"));
+    assert!(stdout.contains("\"command\":\"status\""));
+    assert!(stdout.contains("\"events\":2"));
+    assert!(stdout.contains("\"unique_traces\":2"));
 }
 
 #[test]
@@ -45,6 +47,8 @@ fn summary_includes_recent_errors() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("\"ok\":true"));
+    assert!(stdout.contains("\"command\":\"summary\""));
     assert!(stdout.contains("recent_errors"));
     assert!(stdout.contains("menu_failed"));
     assert!(stdout.contains("slow_spans"));
@@ -70,6 +74,8 @@ fn monitor_once_outputs_delta_summary() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("\"ok\":true"));
+    assert!(stdout.contains("\"command\":\"monitor\""));
     assert!(stdout.contains("delta_summary"));
     assert!(stdout.contains("delta_events"));
     assert!(stdout.contains("menu_failed"));
@@ -137,6 +143,8 @@ fn monitor_since_last_uses_state_file() {
         .unwrap();
     assert!(third.status.success());
     let third_stdout = String::from_utf8(third.stdout).unwrap();
+    assert!(third_stdout.contains("\"ok\":true"));
+    assert!(third_stdout.contains("\"command\":\"monitor\""));
     assert!(third_stdout.contains("\"delta_events\":1"));
     assert!(third_stdout.contains("menu_refreshed"));
 }
