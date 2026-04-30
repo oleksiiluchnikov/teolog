@@ -30,18 +30,19 @@ enum Commands {
 
 #[derive(Args, Debug, Clone)]
 struct QueryCommand {
-    path: Option<PathBuf>,
-    #[arg(long, default_value_t = 20)]
-    limit: usize,
-    #[arg(long)]
-    level: Option<String>,
     #[command(flatten)]
-    render: RenderArgs,
+    query: QueryArgs,
 }
 
 #[derive(Args, Debug, Clone)]
 struct SearchCommand {
     pattern: String,
+    #[command(flatten)]
+    query: QueryArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+struct QueryArgs {
     path: Option<PathBuf>,
     #[arg(long, default_value_t = 20)]
     limit: usize,
@@ -179,52 +180,67 @@ fn command_name(command: &Commands) -> &'static str {
 }
 
 fn cmd_status(cmd: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let path = resolve_log_file(cmd.path)?;
-    let events = load_events(&path)?;
+    let (path, events) = load_query_events(&cmd.query)?;
     let value = build_status_value(&path, &events);
-    render_value("status", value, &cmd.render)
+    render_value("status", value, &cmd.query.render)
 }
 
 fn cmd_recent(cmd: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let path = resolve_log_file(cmd.path)?;
-    let events = load_events(&path)?;
-    let rows = limit_events(
-        filter_by_level(events.iter(), cmd.level.as_deref()),
-        cmd.limit,
-    )
-    .into_iter()
-    .map(|loaded| loaded.raw.clone())
-    .collect();
-    render_rows("recent", rows, &cmd.render)
+    render_query_rows("recent", &cmd.query, |_| true)
 }
 
 fn cmd_errors(cmd: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let path = resolve_log_file(cmd.path)?;
-    let events = load_events(&path)?;
-    let rows = events
-        .iter()
-        .filter(|loaded| loaded.event.lvl.to_string() == "error")
-        .filter(|loaded| level_matches(&loaded.event, cmd.level.as_deref()))
-        .take(cmd.limit)
-        .map(|loaded| loaded.raw.clone())
-        .collect();
-    render_rows("errors", rows, &cmd.render)
+    render_query_rows("errors", &cmd.query, |loaded| {
+        loaded.event.lvl.to_string() == "error"
+    })
 }
 
 fn cmd_search(cmd: SearchCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let path = resolve_log_file(cmd.path)?;
+    let path = resolve_log_file(cmd.query.path.clone())?;
     let events = load_events(&path)?;
     let regex = RegexBuilder::new(&cmd.pattern)
         .case_insensitive(true)
         .build()?;
-    let rows = events
+    let rows = query_rows(&events, &cmd.query, |loaded| regex.is_match(&loaded.text));
+    render_rows("search", rows, &cmd.query.render)
+}
+
+fn render_query_rows<F>(
+    label: &str,
+    query: &QueryArgs,
+    keep: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: Fn(&LoadedEvent) -> bool,
+{
+    let (_, events) = load_query_events(query)?;
+    let rows = query_rows(&events, query, keep);
+    render_rows(label, rows, &query.render)
+}
+
+fn load_query_events(
+    query: &QueryArgs,
+) -> Result<(PathBuf, Vec<LoadedEvent>), Box<dyn std::error::Error>> {
+    let path = resolve_log_file(query.path.clone())?;
+    let events = load_events(&path)?;
+    Ok((path, events))
+}
+
+fn query_rows<F>(events: &[LoadedEvent], query: &QueryArgs, keep: F) -> Vec<Value>
+where
+    F: Fn(&LoadedEvent) -> bool,
+{
+    events
         .iter()
-        .filter(|loaded| regex.is_match(&loaded.text))
-        .filter(|loaded| level_matches(&loaded.event, cmd.level.as_deref()))
-        .take(cmd.limit)
+        .rev()
+        .filter(|loaded| keep(loaded))
+        .filter(|loaded| level_matches(&loaded.event, query.level.as_deref()))
+        .take(query.limit)
         .map(|loaded| loaded.raw.clone())
-        .collect();
-    render_rows("search", rows, &cmd.render)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 fn cmd_trace(cmd: TraceCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -413,30 +429,10 @@ fn load_events(path: &Path) -> Result<Vec<LoadedEvent>, Box<dyn std::error::Erro
     Ok(loaded)
 }
 
-fn filter_by_level<'a>(
-    events: impl Iterator<Item = &'a LoadedEvent>,
-    level: Option<&str>,
-) -> Vec<&'a LoadedEvent> {
-    events
-        .filter(|loaded| level_matches(&loaded.event, level))
-        .collect()
-}
-
 fn level_matches(event: &WideEvent, level: Option<&str>) -> bool {
     level
         .map(|level| event.lvl.to_string() == level)
         .unwrap_or(true)
-}
-
-fn limit_events(events: Vec<&LoadedEvent>, limit: usize) -> Vec<&LoadedEvent> {
-    events
-        .into_iter()
-        .rev()
-        .take(limit)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
 }
 
 fn build_status_value(path: &Path, events: &[LoadedEvent]) -> Value {

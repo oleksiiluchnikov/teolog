@@ -131,7 +131,7 @@ impl RotatingFileState {
     }
 
     fn emit_line(&mut self, line: &str) -> std::io::Result<()> {
-        let line_bytes = line.as_bytes().len() as u64 + 1;
+        let line_bytes = line.len() as u64 + 1;
         if self.policy.max_bytes > 0
             && self.size_bytes > 0
             && self.size_bytes + line_bytes > self.policy.max_bytes
@@ -146,18 +146,13 @@ impl RotatingFileState {
 
     fn rotate(&mut self) -> std::io::Result<()> {
         self.writer.flush()?;
-        if self.policy.max_files == 0 {
-            self.writer = std::io::BufWriter::new(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(&self.path)?,
-            );
-            self.size_bytes = 0;
-            return Ok(());
+        if self.policy.max_files > 0 {
+            self.rotate_archives();
         }
+        self.reopen_truncated()
+    }
 
+    fn rotate_archives(&self) {
         let oldest = archive_path(&self.path, self.policy.max_files);
         if oldest.exists() {
             let _ = std::fs::remove_file(&oldest);
@@ -172,13 +167,15 @@ impl RotatingFileState {
         if self.path.exists() {
             let _ = std::fs::rename(&self.path, archive_path(&self.path, 1));
         }
-        self.writer = std::io::BufWriter::new(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&self.path)?,
-        );
+    }
+
+    fn reopen_truncated(&mut self) -> std::io::Result<()> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)?;
+        self.writer = std::io::BufWriter::new(file);
         self.size_bytes = 0;
         Ok(())
     }

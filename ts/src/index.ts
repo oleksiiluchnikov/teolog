@@ -1,10 +1,18 @@
 // teolog — Cross-stack wide-event structured logging (TypeScript)
 
-import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
 
-export type Level = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+export type Level = "trace" | "debug" | "info" | "warn" | "error";
 
 /** Matches schema/wide-event.schema.json */
 export interface WideEvent {
@@ -27,6 +35,82 @@ export interface WideEvent {
   [key: string]: unknown;
 }
 
+type SpanRun<T> = (span: SpanBuilder) => T | Promise<T>;
+type SpanArgs<T> =
+  | [SpanRun<T>]
+  | [Record<string, unknown> | undefined, SpanRun<T>];
+
+interface EventBaseInput {
+  level: Level;
+  msg: string;
+  project?: string;
+  traceId: string;
+  spanId: string;
+  service?: string;
+}
+
+export function applyOptionalEventFields(
+  event: WideEvent,
+  ctx?: Record<string, unknown>,
+  data?: Record<string, unknown>,
+  err?: WideEvent["err"],
+): WideEvent {
+  if (ctx && Object.keys(ctx).length > 0) event.ctx = ctx;
+  if (data && Object.keys(data).length > 0) event.data = data;
+  if (err) event.err = err;
+  return event;
+}
+
+function buildEventBase(input: EventBaseInput): WideEvent {
+  const event: WideEvent = {
+    ts: new Date().toISOString(),
+    lvl: input.level,
+    msg: input.msg,
+    project: input.project,
+    trace_id: input.traceId,
+    span_id: input.spanId,
+  };
+  if (input.service) event.service = input.service;
+  return event;
+}
+
+function resolveSpanArgs<T>(
+  args: SpanArgs<T>,
+  missingCallbackMessage: string,
+): { context?: Record<string, unknown>; run: SpanRun<T> } {
+  const [first, second] = args;
+  const context = typeof first === "function" ? undefined : first;
+  const run = typeof first === "function" ? first : second;
+  if (!run) throw new Error(missingCallbackMessage);
+  return { context, run };
+}
+
+function sourceFields(): Pick<SpanOptions, "source" | "lnum"> {
+  const loc = captureSource();
+  return { source: loc?.source, lnum: loc?.lnum };
+}
+
+async function runWithSpan<T>(
+  span: SpanBuilder,
+  run: SpanRun<T>,
+  context?: Record<string, unknown>,
+): Promise<T> {
+  if (context) {
+    for (const [key, value] of Object.entries(context)) {
+      if (value !== undefined) span.set(key, value);
+    }
+  }
+
+  try {
+    const result = await run(span);
+    span.finish();
+    return result;
+  } catch (error) {
+    span.err(error).finish();
+    throw error;
+  }
+}
+
 // --- ID Generation (OTEL-compatible hex) ---
 
 /** Generate a trace ID: 16 random bytes → 32 lowercase hex chars. */
@@ -44,9 +128,9 @@ export function genSpanId(): string {
 }
 
 function hexEncode(bytes: Uint8Array): string {
-  let s = '';
+  let s = "";
   for (const b of bytes) {
-    s += b.toString(16).padStart(2, '0');
+    s += b.toString(16).padStart(2, "0");
   }
   return s;
 }
@@ -54,8 +138,8 @@ function hexEncode(bytes: Uint8Array): string {
 // --- Source Location ---
 
 /** Parse caller file:line from Error.stack (best-effort). */
-const LOG_PATHS = process.env.TEOLOG_LOG_PATHS === '1';
-const LOG_STACKS = process.env.TEOLOG_LOG_STACKS === '1';
+const LOG_PATHS = process.env.TEOLOG_LOG_PATHS === "1";
+const LOG_STACKS = process.env.TEOLOG_LOG_STACKS === "1";
 
 function sanitizeSource(source: string): string {
   return LOG_PATHS ? source : basename(source);
@@ -64,18 +148,19 @@ function sanitizeSource(source: string): string {
 function captureSource(): { source: string; lnum: number } | undefined {
   const err = new Error();
   if (!err.stack) return undefined;
-  const lines = err.stack.split('\n');
+  const lines = err.stack.split("\n");
   for (let i = 2; i < lines.length; i++) {
     const line = lines[i];
-    const match = line.match(/\((.+):(\d+):\d+\)/) ?? line.match(/at\s+(.+):(\d+):\d+/);
+    const match =
+      line.match(/\((.+):(\d+):\d+\)/) ?? line.match(/at\s+(.+):(\d+):\d+/);
     if (!match) continue;
 
     const source = match[1];
     if (
-      source.includes('/teolog/ts/src/') ||
-      source.includes('/teolog/ts/dist/') ||
-      source.endsWith('/src/log.ts') ||
-      source.endsWith('\\src\\log.ts')
+      source.includes("/teolog/ts/src/") ||
+      source.includes("/teolog/ts/dist/") ||
+      source.endsWith("/src/log.ts") ||
+      source.endsWith("\\src\\log.ts")
     ) {
       continue;
     }
@@ -96,9 +181,15 @@ export interface LoggerOptions {
   traceId?: string;
 }
 
-export function resolveXdgStatePath(appName: string, ...parts: string[]): string {
+export function resolveXdgStatePath(
+  appName: string,
+  ...parts: string[]
+): string {
   const xdgStateHome = process.env.XDG_STATE_HOME;
-  const stateRoot = xdgStateHome && xdgStateHome.length > 0 ? xdgStateHome : join(homedir(), '.local', 'state');
+  const stateRoot =
+    xdgStateHome && xdgStateHome.length > 0
+      ? xdgStateHome
+      : join(homedir(), ".local", "state");
   return join(stateRoot, appName, ...parts);
 }
 
@@ -116,7 +207,7 @@ export class FileSink implements Sink {
   }
 
   emit(event: WideEvent): void {
-    appendFileSync(this.filePath, `${JSON.stringify(event)}\n`, 'utf8');
+    appendFileSync(this.filePath, `${JSON.stringify(event)}\n`, "utf8");
   }
 }
 
@@ -144,7 +235,10 @@ export class RotatingFileSink implements Sink {
     this.maxFiles = options.maxFiles;
   }
 
-  static open(filePath: string, options: RotationOptions = {}): RotatingFileSink {
+  static open(
+    filePath: string,
+    options: RotationOptions = {},
+  ): RotatingFileSink {
     mkdirSync(dirname(filePath), { recursive: true });
     return new RotatingFileSink(filePath, {
       maxBytes: options.maxBytes ?? DEFAULT_ROTATION_MAX_BYTES,
@@ -154,19 +248,25 @@ export class RotatingFileSink implements Sink {
 
   emit(event: WideEvent): void {
     const line = `${JSON.stringify(event)}\n`;
-    const lineBytes = Buffer.byteLength(line, 'utf8');
-    const currentSize = existsSync(this.filePath) ? statSync(this.filePath).size : 0;
+    const lineBytes = Buffer.byteLength(line, "utf8");
+    const currentSize = existsSync(this.filePath)
+      ? statSync(this.filePath).size
+      : 0;
 
-    if (this.maxBytes > 0 && currentSize > 0 && currentSize + lineBytes > this.maxBytes) {
+    if (
+      this.maxBytes > 0 &&
+      currentSize > 0 &&
+      currentSize + lineBytes > this.maxBytes
+    ) {
       this.rotate();
     }
 
-    appendFileSync(this.filePath, line, 'utf8');
+    appendFileSync(this.filePath, line, "utf8");
   }
 
   private rotate(): void {
     if (this.maxFiles === 0) {
-      writeFileSync(this.filePath, '', 'utf8');
+      writeFileSync(this.filePath, "", "utf8");
       return;
     }
 
@@ -179,8 +279,9 @@ export class RotatingFileSink implements Sink {
       if (existsSync(src)) renameSync(src, dst);
     }
 
-    if (existsSync(this.filePath)) renameSync(this.filePath, archivePath(this.filePath, 1));
-    writeFileSync(this.filePath, '', 'utf8');
+    if (existsSync(this.filePath))
+      renameSync(this.filePath, archivePath(this.filePath, 1));
+    writeFileSync(this.filePath, "", "utf8");
   }
 }
 
@@ -189,18 +290,29 @@ export class ConsoleSink implements Sink {
   emit(event: WideEvent): void {
     const json = JSON.stringify(event);
     switch (event.lvl) {
-      case 'error': console.error(json); break;
-      case 'warn':  console.warn(json); break;
-      case 'debug': console.debug(json); break;
-      case 'trace': console.debug(json); break;
-      default:      console.log(json);
+      case "error":
+        console.error(json);
+        break;
+      case "warn":
+        console.warn(json);
+        break;
+      case "debug":
+        console.debug(json);
+        break;
+      case "trace":
+        console.debug(json);
+        break;
+      default:
+        console.log(json);
     }
   }
 }
 
 /** Emit via a callback (for Tauri plugin-log bridge, HTTP, etc). */
 export class CallbackSink implements Sink {
-  constructor(private cb: (level: Level, json: string) => void | Promise<void>) {}
+  constructor(
+    private cb: (level: Level, json: string) => void | Promise<void>,
+  ) {}
   emit(event: WideEvent): void {
     this.cb(event.lvl, JSON.stringify(event));
   }
@@ -256,17 +368,17 @@ export class HttpSink implements Sink {
   flush(): void {
     if (this.queue.length === 0) return;
     const batch = this.queue.splice(0);
-    const body = batch.join('\n');
+    const body = batch.join("\n");
 
     fetch(this.url, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/x-ndjson',
+        "Content-Type": "application/x-ndjson",
         ...this.headers,
       },
       body,
     }).catch((err) => {
-      console.error('[teolog] HttpSink flush error:', err);
+      console.error("[teolog] HttpSink flush error:", err);
     });
   }
 
@@ -308,7 +420,9 @@ export class LogContext {
 
 // --- Logger ---
 
-function isLoggerOptions(value: LogContext | LoggerOptions | undefined): value is LoggerOptions {
+function isLoggerOptions(
+  value: LogContext | LoggerOptions | undefined,
+): value is LoggerOptions {
   return value !== undefined && !(value instanceof LogContext);
 }
 
@@ -320,18 +434,28 @@ export class Logger {
   private context: LogContext;
 
   constructor(project: string, sink?: Sink, options?: LoggerOptions);
-  constructor(project: string, sink: Sink | undefined, context: LogContext, options?: LoggerOptions);
+  constructor(
+    project: string,
+    sink: Sink | undefined,
+    context: LogContext,
+    options?: LoggerOptions,
+  );
   constructor(
     project: string,
     sink?: Sink,
     contextOrOptions?: LogContext | LoggerOptions,
     maybeOptions?: LoggerOptions,
   ) {
-    const options = isLoggerOptions(contextOrOptions) ? contextOrOptions : maybeOptions;
+    const options = isLoggerOptions(contextOrOptions)
+      ? contextOrOptions
+      : maybeOptions;
 
     this.project = project;
     this.sink = sink ?? new ConsoleSink();
-    this.context = contextOrOptions instanceof LogContext ? contextOrOptions : new LogContext();
+    this.context =
+      contextOrOptions instanceof LogContext
+        ? contextOrOptions
+        : new LogContext();
     this.service = options?.service;
     this.traceId = options?.traceId;
   }
@@ -357,63 +481,38 @@ export class Logger {
 
   /** Start a span (returns a builder). Call .finish() when done. */
   span(name: string): SpanBuilder {
-    const loc = captureSource();
     return new SpanBuilder(this, name, this.context.child(), {
       traceId: this.resolveTraceId(),
       service: this.service,
-      source: loc?.source,
-      lnum: loc?.lnum,
+      ...sourceFields(),
     });
   }
 
-  withSpan<T>(name: string, context: Record<string, unknown> | undefined, run: (span: SpanBuilder) => T | Promise<T>): Promise<T>;
-  withSpan<T>(name: string, run: (span: SpanBuilder) => T | Promise<T>): Promise<T>;
-  async withSpan<T>(
-    name: string,
-    contextOrRun: Record<string, unknown> | ((span: SpanBuilder) => T | Promise<T>) | undefined,
-    maybeRun?: (span: SpanBuilder) => T | Promise<T>,
-  ): Promise<T> {
-    const context = typeof contextOrRun === 'function' ? undefined : contextOrRun;
-    const run = typeof contextOrRun === 'function' ? contextOrRun : maybeRun;
-    if (!run) throw new Error('logger.withSpan requires callback');
-
-    const span = this.span(name);
-    if (context) {
-      for (const [key, value] of Object.entries(context)) {
-        if (value !== undefined) span.set(key, value);
-      }
-    }
-
-    try {
-      const result = await run(span);
-      span.finish();
-      return result;
-    } catch (error) {
-      span.err(error).finish();
-      throw error;
-    }
+  async withSpan<T>(name: string, ...args: SpanArgs<T>): Promise<T> {
+    const parsed = resolveSpanArgs(args, "logger.withSpan requires callback");
+    return runWithSpan(this.span(name), parsed.run, parsed.context);
   }
 
-  private buildEvent(level: Level, msg: string, data?: Record<string, unknown>, err?: WideEvent['err']): WideEvent {
+  private buildEvent(
+    level: Level,
+    msg: string,
+    data?: Record<string, unknown>,
+    err?: WideEvent["err"],
+  ): WideEvent {
     const loc = captureSource();
-    const event: WideEvent = {
-      ts: new Date().toISOString(),
-      lvl: level,
+    const event = buildEventBase({
+      level,
       msg,
       project: this.project,
-      trace_id: this.resolveTraceId(),
-      span_id: genSpanId(),
-    };
-    if (this.service) event.service = this.service;
+      traceId: this.resolveTraceId(),
+      spanId: genSpanId(),
+      service: this.service,
+    });
     if (loc) {
       event.source = loc.source;
       event.lnum = loc.lnum;
     }
-    const ctx = this.context.snapshot();
-    if (Object.keys(ctx).length > 0) event.ctx = ctx;
-    if (data && Object.keys(data).length > 0) event.data = data;
-    if (err) event.err = err;
-    return event;
+    return applyOptionalEventFields(event, this.context.snapshot(), data, err);
   }
 
   /** Emit a one-shot event. */
@@ -421,18 +520,33 @@ export class Logger {
     this.sink.emit(this.buildEvent(level, msg, data));
   }
 
-  info(msg: string, data?: Record<string, unknown>)  { this.emit('info', msg, data); }
-  warn(msg: string, data?: Record<string, unknown>)  { this.emit('warn', msg, data); }
-  error(msg: string, data?: Record<string, unknown>) { this.emit('error', msg, data); }
-  debug(msg: string, data?: Record<string, unknown>) { this.emit('debug', msg, data); }
-  trace(msg: string, data?: Record<string, unknown>) { this.emit('trace', msg, data); }
+  info(msg: string, data?: Record<string, unknown>) {
+    this.emit("info", msg, data);
+  }
+  warn(msg: string, data?: Record<string, unknown>) {
+    this.emit("warn", msg, data);
+  }
+  error(msg: string, data?: Record<string, unknown>) {
+    this.emit("error", msg, data);
+  }
+  debug(msg: string, data?: Record<string, unknown>) {
+    this.emit("debug", msg, data);
+  }
+  trace(msg: string, data?: Record<string, unknown>) {
+    this.emit("trace", msg, data);
+  }
 
   /** Emit with an error object. */
   errorWith(msg: string, err: unknown, data?: Record<string, unknown>): void {
-    const errDetails = err instanceof Error
-      ? { message: err.message, kind: err.name, ...(LOG_STACKS && err.stack ? { stack: err.stack } : {}) }
-      : { message: String(err) };
-    this.sink.emit(this.buildEvent('error', msg, data, errDetails));
+    const errDetails =
+      err instanceof Error
+        ? {
+            message: err.message,
+            kind: err.name,
+            ...(LOG_STACKS && err.stack ? { stack: err.stack } : {}),
+          }
+        : { message: String(err) };
+    this.sink.emit(this.buildEvent("error", msg, data, errDetails));
   }
 
   /** Internal: used by SpanBuilder. */
@@ -456,7 +570,7 @@ export class SpanBuilder {
   private name: string;
   private context: LogContext;
   private _data: Record<string, unknown> = {};
-  private _err?: WideEvent['err'];
+  private _err?: WideEvent["err"];
   private started: number;
   private _traceId: string;
   private _spanId: string;
@@ -465,7 +579,12 @@ export class SpanBuilder {
   private _source?: string;
   private _lnum?: number;
 
-  constructor(logger: Logger, name: string, context: LogContext, opts: SpanOptions) {
+  constructor(
+    logger: Logger,
+    name: string,
+    context: LogContext,
+    opts: SpanOptions,
+  ) {
     this.logger = logger;
     this.name = name;
     this.context = context;
@@ -479,10 +598,14 @@ export class SpanBuilder {
   }
 
   /** Get this span's ID (for passing to child spans or other services). */
-  get spanId(): string { return this._spanId; }
+  get spanId(): string {
+    return this._spanId;
+  }
 
   /** Get this span's trace ID. */
-  get traceId(): string { return this._traceId; }
+  get traceId(): string {
+    return this._traceId;
+  }
 
   /** Add to span context. */
   set(key: string, value: unknown): this {
@@ -498,50 +621,30 @@ export class SpanBuilder {
 
   /** Record an error. */
   err(err: unknown): this {
-    this._err = err instanceof Error
-      ? { message: err.message, kind: err.name, ...(LOG_STACKS && err.stack ? { stack: err.stack } : {}) }
-      : { message: String(err) };
+    this._err =
+      err instanceof Error
+        ? {
+            message: err.message,
+            kind: err.name,
+            ...(LOG_STACKS && err.stack ? { stack: err.stack } : {}),
+          }
+        : { message: String(err) };
     return this;
   }
 
   /** Create a child span that shares this span's trace_id. */
   span(name: string): SpanBuilder {
-    const loc = captureSource();
     return new SpanBuilder(this.logger, name, this.context.child(), {
       traceId: this._traceId,
       parentId: this._spanId,
       service: this._service,
-      source: loc?.source,
-      lnum: loc?.lnum,
+      ...sourceFields(),
     });
   }
 
-  withSpan<T>(name: string, context: Record<string, unknown> | undefined, run: (span: SpanBuilder) => T | Promise<T>): Promise<T>;
-  withSpan<T>(name: string, run: (span: SpanBuilder) => T | Promise<T>): Promise<T>;
-  async withSpan<T>(
-    name: string,
-    contextOrRun: Record<string, unknown> | ((span: SpanBuilder) => T | Promise<T>) | undefined,
-    maybeRun?: (span: SpanBuilder) => T | Promise<T>,
-  ): Promise<T> {
-    const context = typeof contextOrRun === 'function' ? undefined : contextOrRun;
-    const run = typeof contextOrRun === 'function' ? contextOrRun : maybeRun;
-    if (!run) throw new Error('span.withSpan requires callback');
-
-    const child = this.span(name);
-    if (context) {
-      for (const [key, value] of Object.entries(context)) {
-        if (value !== undefined) child.set(key, value);
-      }
-    }
-
-    try {
-      const result = await run(child);
-      child.finish();
-      return result;
-    } catch (error) {
-      child.err(error).finish();
-      throw error;
-    }
+  async withSpan<T>(name: string, ...args: SpanArgs<T>): Promise<T> {
+    const parsed = resolveSpanArgs(args, "span.withSpan requires callback");
+    return runWithSpan(this.span(name), parsed.run, parsed.context);
   }
 
   /** Emit the span event. */
@@ -552,7 +655,7 @@ export class SpanBuilder {
 
     const event: WideEvent = {
       ts: new Date().toISOString(),
-      lvl: hasError ? 'error' : 'info',
+      lvl: hasError ? "error" : "info",
       msg: this.name,
       span: this.name,
       dur_ms,

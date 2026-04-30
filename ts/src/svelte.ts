@@ -7,11 +7,28 @@
 //   const log = createLogger('kolo', consoleSink, { service: 'svelte-frontend' });
 //   log.info('Mounted', { duration: 42 });
 
-export { Logger, ConsoleSink, CallbackSink, MultiSink, HttpSink, FileSink, SpanBuilder, genTraceId, genSpanId, resolveXdgStatePath } from './index.js';
-export type { Level, WideEvent, Sink } from './index.js';
+export {
+  Logger,
+  ConsoleSink,
+  CallbackSink,
+  MultiSink,
+  HttpSink,
+  FileSink,
+  SpanBuilder,
+  genTraceId,
+  genSpanId,
+  resolveXdgStatePath,
+} from "./index.js";
+export type { Level, WideEvent, Sink } from "./index.js";
 
-import { Logger, ConsoleSink, genTraceId, genSpanId } from './index.js';
-import type { Level, WideEvent, Sink } from './index.js';
+import {
+  Logger,
+  ConsoleSink,
+  genTraceId,
+  genSpanId,
+  applyOptionalEventFields,
+} from "./index.js";
+import type { Level, WideEvent, Sink } from "./index.js";
 
 /** Reactive LogContext using Svelte 5 $state rune. */
 class ReactiveLogContext {
@@ -48,7 +65,11 @@ interface ReactiveLoggerOptions {
  * Create a logger that automatically merges the reactive logContext
  * into every event's ctx field. Supports trace_id and service.
  */
-export function createLogger(project: string, sink?: Sink, options?: ReactiveLoggerOptions): ReactiveLogger {
+export function createLogger(
+  project: string,
+  sink?: Sink,
+  options?: ReactiveLoggerOptions,
+): ReactiveLogger {
   return new ReactiveLogger(project, sink ?? new ConsoleSink(), options);
 }
 
@@ -74,7 +95,12 @@ class ReactiveLogger {
     return this.traceId ?? genTraceId();
   }
 
-  private build(level: Level, msg: string, data?: Record<string, unknown>, err?: WideEvent['err']): WideEvent {
+  private build(
+    level: Level,
+    msg: string,
+    data?: Record<string, unknown>,
+    err?: WideEvent["err"],
+  ): WideEvent {
     const event: WideEvent = {
       ts: new Date().toISOString(),
       lvl: level,
@@ -84,23 +110,36 @@ class ReactiveLogger {
       span_id: genSpanId(),
     };
     if (this.service) event.service = this.service;
-    const ctx = logContext.snapshot();
-    if (Object.keys(ctx).length > 0) event.ctx = ctx;
-    if (data && Object.keys(data).length > 0) event.data = data;
-    if (err) event.err = err;
-    return event;
+    return applyOptionalEventFields(event, logContext.snapshot(), data, err);
   }
 
-  info(msg: string, data?: Record<string, unknown>)  { this.sink.emit(this.build('info', msg, data)); }
-  warn(msg: string, data?: Record<string, unknown>)  { this.sink.emit(this.build('warn', msg, data)); }
-  error(msg: string, data?: Record<string, unknown>) { this.sink.emit(this.build('error', msg, data)); }
-  debug(msg: string, data?: Record<string, unknown>) { this.sink.emit(this.build('debug', msg, data)); }
-  trace(msg: string, data?: Record<string, unknown>) { this.sink.emit(this.build('trace', msg, data)); }
+  info(msg: string, data?: Record<string, unknown>) {
+    this.sink.emit(this.build("info", msg, data));
+  }
+  warn(msg: string, data?: Record<string, unknown>) {
+    this.sink.emit(this.build("warn", msg, data));
+  }
+  error(msg: string, data?: Record<string, unknown>) {
+    this.sink.emit(this.build("error", msg, data));
+  }
+  debug(msg: string, data?: Record<string, unknown>) {
+    this.sink.emit(this.build("debug", msg, data));
+  }
+  trace(msg: string, data?: Record<string, unknown>) {
+    this.sink.emit(this.build("trace", msg, data));
+  }
 
   errorWith(msg: string, err: unknown, data?: Record<string, unknown>): void {
-    const errDetails = err instanceof Error
-      ? { message: err.message, kind: err.name, ...(process.env.TEOLOG_LOG_STACKS === '1' && err.stack ? { stack: err.stack } : {}) }
-      : { message: String(err) };
-    this.sink.emit(this.build('error', msg, data, errDetails));
+    const errDetails =
+      err instanceof Error
+        ? {
+            message: err.message,
+            kind: err.name,
+            ...(process.env.TEOLOG_LOG_STACKS === "1" && err.stack
+              ? { stack: err.stack }
+              : {}),
+          }
+        : { message: String(err) };
+    this.sink.emit(this.build("error", msg, data, errDetails));
   }
 }

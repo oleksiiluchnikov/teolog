@@ -20,6 +20,27 @@ pub use sink::{
 #[cfg(feature = "http-sink")]
 pub use sink::HttpSink;
 
+macro_rules! level_methods {
+    ($($emit:ident, $emit_fields:ident, $level:expr);+ $(;)?) => {
+        $(
+            #[track_caller]
+            pub fn $emit(&self, msg: &str) {
+                self.emit($level, msg);
+            }
+
+            #[track_caller]
+            pub fn $emit_fields<K, V, I>(&self, msg: &str, fields: I)
+            where
+                K: Into<String>,
+                V: Into<serde_json::Value>,
+                I: IntoIterator<Item = (K, V)>,
+            {
+                self.emit_fields($level, msg, fields);
+            }
+        )+
+    };
+}
+
 /// Initialize teolog with a project name and default sink (stdout).
 pub fn init(project: &str) -> Logger {
     Logger {
@@ -102,18 +123,28 @@ impl Logger {
         }
     }
 
-    /// Emit a one-shot event (no span/duration).
-    #[track_caller]
-    pub fn emit(&self, level: Level, msg: &str) {
-        let caller = std::panic::Location::caller();
-        let mut event = WideEvent::new(level, msg)
+    fn base_event(
+        &self,
+        level: Level,
+        msg: &str,
+        caller: &'static std::panic::Location<'static>,
+    ) -> WideEvent {
+        let event = WideEvent::new(level, msg)
             .with_project(&self.project)
             .with_trace_id(&self.resolve_trace_id())
             .with_source(caller.file(), caller.line())
             .with_ctx(&self.context);
-        if let Some(ref svc) = self.service {
-            event = event.with_service(svc);
+        match &self.service {
+            Some(service) => event.with_service(service),
+            None => event,
         }
+    }
+
+    /// Emit a one-shot event (no span/duration).
+    #[track_caller]
+    pub fn emit(&self, level: Level, msg: &str) {
+        let caller = std::panic::Location::caller();
+        let event = self.base_event(level, msg, caller);
         self.sink.emit(&event);
     }
 
@@ -126,15 +157,7 @@ impl Logger {
         data: serde_json::Map<String, serde_json::Value>,
     ) {
         let caller = std::panic::Location::caller();
-        let mut event = WideEvent::new(level, msg)
-            .with_project(&self.project)
-            .with_trace_id(&self.resolve_trace_id())
-            .with_source(caller.file(), caller.line())
-            .with_ctx(&self.context)
-            .with_data(data);
-        if let Some(ref svc) = self.service {
-            event = event.with_service(svc);
-        }
+        let event = self.base_event(level, msg, caller).with_data(data);
         self.sink.emit(&event);
     }
 
@@ -153,78 +176,13 @@ impl Logger {
         self.emit_with(level, msg, data);
     }
 
-    #[track_caller]
-    pub fn info(&self, msg: &str) {
-        self.emit(Level::Info, msg);
-    }
-
-    #[track_caller]
-    pub fn info_fields<K, V, I>(&self, msg: &str, fields: I)
-    where
-        K: Into<String>,
-        V: Into<serde_json::Value>,
-        I: IntoIterator<Item = (K, V)>,
-    {
-        self.emit_fields(Level::Info, msg, fields);
-    }
-    #[track_caller]
-    pub fn warn(&self, msg: &str) {
-        self.emit(Level::Warn, msg);
-    }
-
-    #[track_caller]
-    pub fn warn_fields<K, V, I>(&self, msg: &str, fields: I)
-    where
-        K: Into<String>,
-        V: Into<serde_json::Value>,
-        I: IntoIterator<Item = (K, V)>,
-    {
-        self.emit_fields(Level::Warn, msg, fields);
-    }
-
-    #[track_caller]
-    pub fn error(&self, msg: &str) {
-        self.emit(Level::Error, msg);
-    }
-
-    #[track_caller]
-    pub fn error_fields<K, V, I>(&self, msg: &str, fields: I)
-    where
-        K: Into<String>,
-        V: Into<serde_json::Value>,
-        I: IntoIterator<Item = (K, V)>,
-    {
-        self.emit_fields(Level::Error, msg, fields);
-    }
-
-    #[track_caller]
-    pub fn debug(&self, msg: &str) {
-        self.emit(Level::Debug, msg);
-    }
-
-    #[track_caller]
-    pub fn debug_fields<K, V, I>(&self, msg: &str, fields: I)
-    where
-        K: Into<String>,
-        V: Into<serde_json::Value>,
-        I: IntoIterator<Item = (K, V)>,
-    {
-        self.emit_fields(Level::Debug, msg, fields);
-    }
-    #[track_caller]
-    pub fn trace(&self, msg: &str) {
-        self.emit(Level::Trace, msg);
-    }
-
-    #[track_caller]
-    pub fn trace_fields<K, V, I>(&self, msg: &str, fields: I)
-    where
-        K: Into<String>,
-        V: Into<serde_json::Value>,
-        I: IntoIterator<Item = (K, V)>,
-    {
-        self.emit_fields(Level::Trace, msg, fields);
-    }
+    level_methods!(
+        info, info_fields, Level::Info;
+        warn, warn_fields, Level::Warn;
+        error, error_fields, Level::Error;
+        debug, debug_fields, Level::Debug;
+        trace, trace_fields, Level::Trace
+    );
 }
 
 /// A span that accumulates context and data, emitting one wide event on drop.
